@@ -1,0 +1,7 @@
+name: flash_spike
+description: "Dummy-block flash causes an early-stroke force spike on every cycle from 6000 to 10000."
+seed: 1009
+n_cycles: 14000
+context: {alloy: AA6063, die_id: D-101, extrusion_ratio: 40.0}
+faults:
+  - {kind: flash_spike, onset_cycle: 6000, severity: 1.0, ramp: step, ramp_cycles: 1, end_cycle: 10000}

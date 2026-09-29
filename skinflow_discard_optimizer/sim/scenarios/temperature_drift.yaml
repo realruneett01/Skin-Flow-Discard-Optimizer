@@ -1,0 +1,7 @@
+name: temperature_drift
+description: "Billet furnace drifts cold with a growing taper from cycle 4000 (exponential approach)."
+seed: 1004
+n_cycles: 14000
+context: {alloy: AA6063, die_id: D-103, extrusion_ratio: 55.0}
+faults:
+  - {kind: temperature_drift, onset_cycle: 4000, severity: 0.7, ramp: exp, ramp_cycles: 2500}

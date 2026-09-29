@@ -1,0 +1,69 @@
+# Slow drifts and injectable faults for the simulator (Task 1.3).
+#
+# Every latent variable wanders as an Ornstein-Uhlenbeck process around its baseline
+# (theta = mean-reversion per cycle, sigma = per-cycle noise). A fault adds
+#   severity * activation(n) * effect_per_unit_severity
+# where activation(n) is the ramp shape (step, linear, exp) from the onset cycle.
+# A linear ramp over the OU wander is the plan's "OU plus linear trend" drift.
+# All values are PLACEHOLDER.
+
+ou:
+  liner_scale_mm:
+    theta: {value: 0.02, unit: 1/cycle, status: PLACEHOLDER, SOURCE: "Assumed mean reversion"}
+    sigma: {value: 0.004, unit: mm, status: PLACEHOLDER, SOURCE: "Assumed per-cycle wander"}
+  die_wear:
+    theta: {value: 0.01, unit: 1/cycle, status: PLACEHOLDER, SOURCE: "Assumed mean reversion"}
+    sigma: {value: 0.002, unit: "-", status: PLACEHOLDER, SOURCE: "Assumed per-cycle wander"}
+  billet_temp_C:
+    theta: {value: 0.10, unit: 1/cycle, status: PLACEHOLDER, SOURCE: "Assumed furnace control mean reversion"}
+    sigma: {value: 1.5, unit: K, status: PLACEHOLDER, SOURCE: "Assumed per-cycle furnace wander"}
+  liner_temp_C:
+    theta: {value: 0.05, unit: 1/cycle, status: PLACEHOLDER, SOURCE: "Assumed liner heater control"}
+    sigma: {value: 0.5, unit: K, status: PLACEHOLDER, SOURCE: "Assumed per-cycle wander"}
+  mu_base:
+    theta: {value: 0.05, unit: 1/cycle, status: PLACEHOLDER, SOURCE: "Assumed"}
+    sigma: {value: 0.002, unit: "-", status: PLACEHOLDER, SOURCE: "Assumed lubrication variation"}
+  oil_temp_C:
+    theta: {value: 0.05, unit: 1/cycle, status: PLACEHOLDER, SOURCE: "Assumed cooler control"}
+    sigma: {value: 0.3, unit: K, status: PLACEHOLDER, SOURCE: "Assumed"}
+
+baseline:
+  oil_temp_C: {value: 45.0, unit: degC, status: PLACEHOLDER, SOURCE: "Assumed HPU oil temperature with cooler working"}
+  liner_zone_offsets_K:
+    value: [4.0, 1.0, -1.0, -4.0]
+    unit: K
+    status: PLACEHOLDER
+    SOURCE: "Assumed static zone-to-zone differences of liner temps 1-4 (die end hotter)"
+
+# Effect of severity = 1.0 at full activation.
+effects:
+  die_wear:
+    die_wear: {value: 0.8, unit: "wear index", status: PLACEHOLDER, SOURCE: "Assumed: severity 1 wears a new die to 0.9"}
+  liner_scale:
+    liner_scale_mm: {value: 0.8, unit: mm, status: PLACEHOLDER, SOURCE: "Assumed scale build-up at severity 1"}
+  temperature_drift:
+    billet_temp_C: {value: -20.0, unit: K, status: PLACEHOLDER, SOURCE: "Assumed furnace drifting cold"}
+    taper_K: {value: 15.0, unit: K, status: PLACEHOLDER, SOURCE: "Assumed taper growing as the furnace drifts"}
+  lubricant_loss:
+    mu_base: {value: 0.08, unit: "-", status: PLACEHOLDER, SOURCE: "Assumed friction rise from lost billet/dummy lubrication"}
+  sensor_gain_drift:
+    cap_gain: {value: 0.05, unit: "-", status: PLACEHOLDER, SOURCE: "Assumed +5% cap-pressure transducer gain error at severity 1"}
+  encoder_offset:
+    encoder_offset_mm: {value: 6.0, unit: mm, status: PLACEHOLDER, SOURCE: "Assumed position encoder offset at severity 1"}
+  flash_spike:
+    flash_amp_frac: {value: 0.12, unit: "-", status: PLACEHOLDER, SOURCE: "Assumed dummy-block flash spike as fraction of initial force"}
+    flash_width_mm: {value: 2.5, unit: mm, status: PLACEHOLDER, SOURCE: "Assumed spike width in stroke"}
+  supply_pressure_sag:
+    oil_temp_C: {value: 22.0, unit: K, status: PLACEHOLDER, SOURCE: "Assumed oil temperature rise when the cooler degrades"}
+
+# Oil viscosity and supply-pressure coupling (HPEO has no viscosity model, see assumptions A-05).
+#   nu(T) = nu_40 * exp(-b * (T - 40))                     (exponential viscosity-temperature fit)
+#   supply_sag_bar = max(k_leak * (nu(T_ref) / nu(T) - 1), 0)   (leakage grows as oil thins; T_ref = baseline oil temp)
+#   ram speed scale = 1 - speed_loss_per_bar * supply_sag_bar
+#   cap-pressure reading bias = -cap_bias_per_bar * supply_sag_bar   (manifold-referenced transducer)
+hydraulic:
+  nu_40_cSt: {value: 46.0, unit: cSt, status: PLACEHOLDER, SOURCE: "ISO VG 46 nominal kinematic viscosity at 40 degC (grade definition)"}
+  viscosity_b: {value: 0.035, unit: 1/K, status: PLACEHOLDER, SOURCE: "Assumed exponential fit slope for a VG46 mineral oil near 40-70 degC"}
+  k_leak_bar: {value: 12.0, unit: bar, status: PLACEHOLDER, SOURCE: "Assumed supply pressure loss per unit relative viscosity drop"}
+  speed_loss_per_bar: {value: 0.004, unit: 1/bar, status: PLACEHOLDER, SOURCE: "Assumed ram speed loss per bar of supply sag"}
+  cap_bias_per_bar: {value: 0.10, unit: bar/bar, status: PLACEHOLDER, SOURCE: "Assumed cap-pressure reading bias per bar of supply sag"}

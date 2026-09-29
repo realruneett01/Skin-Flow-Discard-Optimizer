@@ -1,0 +1,7 @@
+name: lubricant_loss
+description: "Sudden loss of lubrication (friction step) at cycle 6000, fixed at cycle 10000."
+seed: 1005
+n_cycles: 14000
+context: {alloy: AA6063, die_id: D-101, extrusion_ratio: 40.0}
+faults:
+  - {kind: lubricant_loss, onset_cycle: 6000, severity: 0.8, ramp: step, ramp_cycles: 1, end_cycle: 10000}

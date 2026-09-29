@@ -1,0 +1,71 @@
+# Economic inputs for the Skin-Flow Discard Optimizer and the shared ROI layer.
+#
+# Every number is a leaf of the form
+#   {value: <number>, unit: <str>, status: PLACEHOLDER | SOURCED, SOURCE: <str>}
+# and config loading fails if a leaf is missing its status or SOURCE
+# (skinflow_discard_optimizer/config.py).
+#
+# PLACEHOLDER means "plausible, not verified for your plant". Replace these with your
+# own figures before quoting any ROI. Values copied from DCTO/HPEO are marked
+# PLACEHOLDER as well, because those projects do not cite a source for them either.
+
+currency: EUR
+
+metal:
+  billet_price_per_kg:
+    value: 2.60
+    unit: EUR/kg
+    status: PLACEHOLDER
+    SOURCE: "Order of magnitude for 6xxx log/billet incl. premium; replace with the plant's purchase price"
+  remelt_credit_per_kg:
+    value: 2.10
+    unit: EUR/kg
+    status: PLACEHOLDER
+    SOURCE: "Assumed internal value of discard returned to the cast house; replace with plant figure"
+  billet_mass_kg:
+    value: 95.0
+    unit: kg
+    status: PLACEHOLDER
+    SOURCE: "DCTO simulator/press_config.py PressConfig.nominal_billet_weight_kg (unsourced there)"
+
+production:
+  cycles_per_hour:
+    value: 43.0
+    unit: 1/h
+    status: PLACEHOLDER
+    SOURCE: "DCTO dashboard/oee_calculator.py PlantParameters.nominal_cycles_per_hour"
+  operating_hours_per_year:
+    value: 7200.0
+    unit: h/yr
+    status: PLACEHOLDER
+    SOURCE: "DCTO dashboard/oee_calculator.py PlantParameters.operating_hours_per_year (3-shift)"
+
+throughput:
+  value_per_second:
+    value: 0.2639
+    unit: EUR/s
+    status: PLACEHOLDER
+    SOURCE: "950 EUR/h press rate / 3600 from DCTO PlantParameters.plant_operating_cost_per_hour_eur"
+
+energy:
+  tariff_csv:
+    path: "../HPEO/data/electricity_prices_es.csv"
+    status: PLACEHOLDER
+    SOURCE: "HPEO ENTSO-E loader output (Spain zone). Deterministic mock unless HPEO ran with ENTSOE_API_KEY"
+  tariff_fallback_per_kwh:
+    value: 0.0643
+    unit: EUR/kWh
+    status: PLACEHOLDER
+    SOURCE: "HPEO opcua_server.py default mean tariff 64.28 EUR/MWh; used only if the CSV is missing"
+
+defect:
+  loss_per_event:
+    value: 400.0
+    unit: EUR
+    status: PLACEHOLDER
+    SOURCE: "Assumed cost of one skin-flow / charge-weld defect: scrapped profile length, handling, re-inspection. Replace with plant quality-cost data"
+  affected_length_m:
+    value: 8.0
+    unit: m
+    status: PLACEHOLDER
+    SOURCE: "Assumed length of profile rejected per defect event (L_d in the decision formula)"

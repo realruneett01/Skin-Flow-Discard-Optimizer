@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skinflow-discard-optimizer"
+version = "0.1.0"
+description = "Skin-Flow Discard Optimizer: third module of the Press Value Platform (advisory discard-cut recommendations for aluminium extrusion presses)."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.12",
+    "pandas>=2.2",
+    "pyarrow>=15",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["skinflow_discard_optimizer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["slow: long-running tests (deselect with -m 'not slow')"]

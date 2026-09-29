@@ -1,0 +1,20 @@
+name: cold_start_days
+description: "Fourteen production days of 1000 cycles, each starting with a cold container and a cool first billet."
+seed: 1011
+n_cycles: 14000
+context: {alloy: AA6063, die_id: D-101, extrusion_ratio: 40.0}
+events:
+  - {cycle: 0, type: cold_start, liner_drop_K: 60, billet_drop_K: 12, tau_cycles: 40}
+  - {cycle: 1000, type: cold_start, liner_drop_K: 60, billet_drop_K: 12, tau_cycles: 40}
+  - {cycle: 2000, type: cold_start, liner_drop_K: 55, billet_drop_K: 10, tau_cycles: 35}
+  - {cycle: 3000, type: cold_start, liner_drop_K: 65, billet_drop_K: 12, tau_cycles: 45}
+  - {cycle: 4000, type: cold_start, liner_drop_K: 60, billet_drop_K: 12, tau_cycles: 40}
+  - {cycle: 5000, type: cold_start, liner_drop_K: 50, billet_drop_K: 8, tau_cycles: 30}
+  - {cycle: 6000, type: cold_start, liner_drop_K: 60, billet_drop_K: 12, tau_cycles: 40}
+  - {cycle: 7000, type: cold_start, liner_drop_K: 70, billet_drop_K: 14, tau_cycles: 50}
+  - {cycle: 8000, type: cold_start, liner_drop_K: 60, billet_drop_K: 12, tau_cycles: 40}
+  - {cycle: 9000, type: cold_start, liner_drop_K: 55, billet_drop_K: 10, tau_cycles: 40}
+  - {cycle: 10000, type: cold_start, liner_drop_K: 60, billet_drop_K: 12, tau_cycles: 40}
+  - {cycle: 11000, type: cold_start, liner_drop_K: 65, billet_drop_K: 12, tau_cycles: 45}
+  - {cycle: 12000, type: cold_start, liner_drop_K: 60, billet_drop_K: 12, tau_cycles: 40}
+  - {cycle: 13000, type: cold_start, liner_drop_K: 60, billet_drop_K: 12, tau_cycles: 40}

@@ -1,0 +1,38 @@
+# Coupling to the Dead-Cycle Timer Optimizer (DCTO) and the Hydraulic Pump Energy
+# Optimizer (HPEO). Phase timings are copied from DCTO so that this repo never has
+# to import DCTO code (docs/assumptions.md A-01).
+
+dead_cycle_phases:
+  decompression:
+    nominal_s: {value: 2.2, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py PhaseTiming decompression"}
+    sd_s: {value: 0.08, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py"}
+  container_shift_open:
+    nominal_s: {value: 3.0, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py PhaseTiming container_shift_open"}
+    sd_s: {value: 0.12, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py"}
+  shear_stroke:
+    nominal_s: {value: 2.5, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py PhaseTiming shear_stroke"}
+    sd_s: {value: 0.10, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py"}
+  die_slide:
+    nominal_s: {value: 1.8, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py PhaseTiming die_slide"}
+    sd_s: {value: 0.06, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py"}
+  billet_load:
+    nominal_s: {value: 3.2, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py PhaseTiming billet_load"}
+    sd_s: {value: 0.15, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py"}
+  container_shift_close:
+    nominal_s: {value: 2.8, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py PhaseTiming container_shift_close"}
+    sd_s: {value: 0.10, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py"}
+  rapid_advance:
+    nominal_s: {value: 2.5, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py PhaseTiming rapid_advance"}
+    sd_s: {value: 0.08, unit: s, status: PLACEHOLDER, SOURCE: "DCTO simulator/press_config.py"}
+
+shear:
+  seconds_per_mm_discard:
+    value: 0.004
+    unit: s/mm
+    status: PLACEHOLDER
+    SOURCE: "Assumed: shear travel/cut time grows slightly with discard thickness. DCTO has no thickness dependence; to be fitted from DCTO timing data plus cut positions in a pilot"
+  reference_cut_mm:
+    value: 40.0
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "The discard at which DCTO's nominal shear_stroke time applies (the static cut, config/defect.yaml)"

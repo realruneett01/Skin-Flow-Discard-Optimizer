@@ -1,0 +1,10 @@
+# Die registry: the live service looks up the extrusion ratio from the die_id tag.
+# The simulated dies used by the scenario library. Replace with the plant's die master data.
+
+D-101: {extrusion_ratio: {value: 40.0, unit: "-", status: PLACEHOLDER, SOURCE: "Simulated die"}}
+D-102: {extrusion_ratio: {value: 32.0, unit: "-", status: PLACEHOLDER, SOURCE: "Simulated die"}}
+D-103: {extrusion_ratio: {value: 55.0, unit: "-", status: PLACEHOLDER, SOURCE: "Simulated die"}}
+D-104: {extrusion_ratio: {value: 25.0, unit: "-", status: PLACEHOLDER, SOURCE: "Simulated die"}}
+D-105: {extrusion_ratio: {value: 40.0, unit: "-", status: PLACEHOLDER, SOURCE: "Simulated die"}}
+D-106: {extrusion_ratio: {value: 48.0, unit: "-", status: PLACEHOLDER, SOURCE: "Simulated die"}}
+D-201: {extrusion_ratio: {value: 36.0, unit: "-", status: PLACEHOLDER, SOURCE: "Simulated die"}}

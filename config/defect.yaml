@@ -1,0 +1,112 @@
+# Ground-truth skin-flow / defect model for the simulator (Task 1.2).
+#
+#   h_crit = base + k_scale*liner_scale + k_wear*die_wear + k_dT*(dT - dT_ref)
+#            + k_mu*(mu - mu_ref) + eps,        eps ~ N(0, noise_sd)
+#   h_onset = h_crit + offset,                  offset ~ N(offset_mean, offset_sd)
+#   P(defect | h_cut) = logistic((h_crit - h_cut) / width)
+#
+# dT is billet temperature minus mean container liner temperature.
+# All coefficients are PLACEHOLDER: they set the simulator's hidden truth, which the
+# models must recover. They are not claims about a real press. The signs follow the
+# usual qualitative account: more liner scale, more die wear, a colder container and
+# higher friction all make skin-flow start earlier (thicker discard needed).
+
+h_crit:
+  base_mm:
+    value: 20.0
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "Assumed critical discard for a healthy 228 mm billet (~9% of diameter)"
+  k_liner_scale_mm_per_mm:
+    value: 8.0
+    unit: mm/mm
+    status: PLACEHOLDER
+    SOURCE: "Assumed sensitivity to liner scale/oxide build-up"
+  k_die_wear_mm:
+    value: 5.0
+    unit: mm per unit wear
+    status: PLACEHOLDER
+    SOURCE: "Assumed sensitivity to die wear index (0 = new, 1 = end of life)"
+  k_dT_mm_per_K:
+    value: 0.08
+    unit: mm/K
+    status: PLACEHOLDER
+    SOURCE: "Assumed sensitivity to billet-minus-liner temperature difference"
+  dT_ref_K:
+    value: 40.0
+    unit: K
+    status: PLACEHOLDER
+    SOURCE: "Nominal billet 470 degC minus liner 430 degC (config/press.yaml)"
+  k_mu_mm:
+    value: 20.0
+    unit: mm per unit mu
+    status: PLACEHOLDER
+    SOURCE: "Assumed sensitivity to container friction"
+  noise_sd_mm:
+    value: 1.2
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "Assumed unexplained billet-to-billet variation"
+  min_mm:
+    value: 5.0
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "Physical floor on h_crit"
+
+onset:
+  offset_mean_mm:
+    value: 10.0
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "KEY HYPOTHESIS (assumptions A-12): the force change starts ~10 mm before skin material reaches the die. It must lead the cost-optimal cut for onset detection to be usable at all; a pilot must measure it"
+  offset_sd_mm:
+    value: 0.8
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "KEY HYPOTHESIS (assumptions A-12): scatter of the onset-to-h_crit gap; sets how much the force signal can tell about each billet"
+  lam_sd_frac:
+    value: 0.10
+    unit: "-"
+    status: PLACEHOLDER
+    SOURCE: "Assumed relative billet-to-billet variation of the upturn decay length"
+  amp_sd_frac:
+    value: 0.15
+    unit: "-"
+    status: PLACEHOLDER
+    SOURCE: "Assumed relative variation of the upturn amplitude"
+
+defect:
+  width_mm:
+    value: 0.75
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "Assumed width of the logistic transition from clean to defective as h_cut passes h_crit"
+
+coupling:
+  mu_per_liner_scale_mm:
+    value: 0.06
+    unit: 1/mm
+    status: PLACEHOLDER
+    SOURCE: "Assumed rise in effective friction per mm of liner scale"
+  F_tool_per_die_wear_N:
+    value: 0.15e6
+    unit: N per unit wear
+    status: PLACEHOLDER
+    SOURCE: "Assumed rise in tooling force as the die wears"
+
+baseline:
+  static_cut_mm:
+    value: 40.0
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "Assumed plant's current fixed conservative discard; the baseline for recovery (Task 5.1)"
+  min_cut_mm:
+    value: 12.0
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "Assumed lower bound on any advisory cut (safety bound, Task 5.3)"
+  max_cut_mm:
+    value: 60.0
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "Assumed upper bound on any advisory cut (safety bound, Task 5.3)"

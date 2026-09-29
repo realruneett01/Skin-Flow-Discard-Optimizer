@@ -1,0 +1,8 @@
+name: die_change
+description: "A worn die is replaced at cycle 7000 by a new die with a different extrusion ratio."
+seed: 1013
+n_cycles: 14000
+context: {alloy: AA6063, die_id: D-105, extrusion_ratio: 40.0}
+baseline: {die_wear: 0.55}
+events:
+  - {cycle: 7000, type: die_change, die_id: D-106, extrusion_ratio: 48.0, die_wear: 0.02}

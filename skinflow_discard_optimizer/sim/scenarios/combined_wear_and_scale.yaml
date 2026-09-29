@@ -1,0 +1,8 @@
+name: combined_wear_and_scale
+description: "Two combined faults: die wear from cycle 4000 and liner scale from cycle 7000."
+seed: 1010
+n_cycles: 16000
+context: {alloy: AA6082, die_id: D-201, extrusion_ratio: 36.0}
+faults:
+  - {kind: die_wear, onset_cycle: 4000, severity: 0.5, ramp: linear, ramp_cycles: 7000}
+  - {kind: liner_scale, onset_cycle: 7000, severity: 0.5, ramp: linear, ramp_cycles: 5000}

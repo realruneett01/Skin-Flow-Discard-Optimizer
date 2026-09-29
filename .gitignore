@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Generated datasets and run outputs (rebuild with the documented commands)
+data/
+reports/
+
+# Tools / IDE
+.repowise/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Fitted model artifacts (rebuild with the documented commands)
+artifacts/
+
+# Agent / AI session files (not part of the project)
+.claude/
+.antigravity.md
+.mcp.json
+agy-session.md
+claude-session.md
+
+# Implementation planning docs (internal, not part of the codebase)
+butt_yield_platform_implementation_plan.md
+
+# Node / npm (used only for local tooling, not part of the project)
+node_modules/
+package.json
+package-lock.json
+lefthook.yml
+biome.json

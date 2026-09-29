@@ -1,0 +1,7 @@
+name: encoder_offset
+description: "Ram position encoder gains a 3 mm offset at cycle 6000. The press is healthy; only the reading is wrong."
+seed: 1008
+n_cycles: 14000
+context: {alloy: AA6063, die_id: D-102, extrusion_ratio: 32.0}
+faults:
+  - {kind: encoder_offset, onset_cycle: 6000, severity: 0.5, ramp: step, ramp_cycles: 1}

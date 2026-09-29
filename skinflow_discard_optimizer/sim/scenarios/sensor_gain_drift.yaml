@@ -1,0 +1,7 @@
+name: sensor_gain_drift
+description: "Cap-pressure transducer gain drifts to +4% from cycle 4000. The press is healthy; only the reading is wrong."
+seed: 1007
+n_cycles: 14000
+context: {alloy: AA6063, die_id: D-101, extrusion_ratio: 40.0}
+faults:
+  - {kind: sensor_gain_drift, onset_cycle: 4000, severity: 0.8, ramp: linear, ramp_cycles: 5000}

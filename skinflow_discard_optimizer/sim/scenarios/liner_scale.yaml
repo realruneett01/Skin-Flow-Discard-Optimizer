@@ -1,0 +1,7 @@
+name: liner_scale
+description: "Container liner scale builds up linearly from cycle 4000."
+seed: 1003
+n_cycles: 14000
+context: {alloy: AA6063, die_id: D-101, extrusion_ratio: 40.0}
+faults:
+  - {kind: liner_scale, onset_cycle: 4000, severity: 0.6, ramp: linear, ramp_cycles: 6000}

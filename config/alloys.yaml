@@ -1,0 +1,74 @@
+# Hot-working constants for the Sellars-Tegart flow-stress law
+#   sigma_f = (1/alpha) * asinh( (Z/A)^(1/n) ),   Z = eps_dot * exp(Q / (Rg*T))
+# Units: Q in J/mol, alpha in 1/MPa, A in 1/s (stored as ln A), density in kg/m^3.
+#
+# The flow-stress constants are in the range reported by published hot-torsion
+# fits for 6xxx alloys (e.g. the Sheppard group's work). They have NOT been checked
+# against a primary source here, so they are all PLACEHOLDER (plan rule 3). Check
+# them against your own references before trusting absolute force levels. The
+# estimator scales flow stress online (theta[0] = sigma_scale), so modest errors
+# change the absolute force but not the onset logic.
+
+AA6063:
+  Q:
+    value: 141550.0
+    unit: J/mol
+    status: PLACEHOLDER
+    SOURCE: "Typical published AA6063 activation energy for hot working (~140-145 kJ/mol); verify"
+  alpha:
+    value: 0.040
+    unit: 1/MPa
+    status: PLACEHOLDER
+    SOURCE: "Typical published AA6063 Sellars-Tegart alpha; verify"
+  n:
+    value: 5.385
+    unit: "-"
+    status: PLACEHOLDER
+    SOURCE: "Typical published AA6063 stress exponent; verify"
+  lnA:
+    value: 22.50
+    unit: ln(1/s)
+    status: PLACEHOLDER
+    SOURCE: "Typical published AA6063 ln A; verify"
+  density:
+    value: 2690.0
+    unit: kg/m^3
+    status: PLACEHOLDER
+    SOURCE: "Handbook density of AA6063 (~2.69-2.70 g/cm^3); verify against supplier data sheet"
+  mu_nominal:
+    value: 0.55
+    unit: "-"
+    status: PLACEHOLDER
+    SOURCE: "Sticking friction: interface shear m*sigma/sqrt(3) (von Mises) gives mu = m/sqrt(3) in the plan's 4*mu*(L0-x)/Db term; m = 0.95 assumed"
+
+AA6082:
+  Q:
+    value: 153000.0
+    unit: J/mol
+    status: PLACEHOLDER
+    SOURCE: "Typical published AA6082 activation energy for hot working (~150-155 kJ/mol); verify"
+  alpha:
+    value: 0.045
+    unit: 1/MPa
+    status: PLACEHOLDER
+    SOURCE: "Typical published AA6082 Sellars-Tegart alpha; verify"
+  n:
+    value: 2.976
+    unit: "-"
+    status: PLACEHOLDER
+    SOURCE: "Typical published AA6082 stress exponent; verify"
+  lnA:
+    value: 23.00
+    unit: ln(1/s)
+    status: PLACEHOLDER
+    SOURCE: "Chosen so AA6082 is ~30% stronger than AA6063 at 480 degC, 1/s; verify"
+  density:
+    value: 2700.0
+    unit: kg/m^3
+    status: PLACEHOLDER
+    SOURCE: "Handbook density of AA6082 (~2.70 g/cm^3); verify against supplier data sheet"
+  mu_nominal:
+    value: 0.56
+    unit: "-"
+    status: PLACEHOLDER
+    SOURCE: "As AA6063 (mu = m/sqrt(3)) with m = 0.97 assumed"

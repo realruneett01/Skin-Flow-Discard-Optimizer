@@ -1,0 +1,5 @@
+name: healthy_baseline
+description: "No faults. Normal OU wander of every latent state. Training data for monitors and FPCA."
+seed: 1001
+n_cycles: 32000
+context: {alloy: AA6063, die_id: D-101, extrusion_ratio: 40.0}

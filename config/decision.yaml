@@ -1,0 +1,62 @@
+# Cut decision and calibration settings (Task 3.3).
+
+conformal:
+  coverage_target:
+    value: 0.90
+    unit: "-"
+    status: PLACEHOLDER
+    SOURCE: "Assumed target coverage of the published h_crit interval; Done-when requires +-2 points"
+  aci_gamma:
+    value: 0.01
+    unit: "-"
+    status: PLACEHOLDER
+    SOURCE: "Adaptive conformal step size (Gibbs & Candes 2021 use 0.005-0.05)"
+  audit_every:
+    value: 20
+    unit: cycles
+    status: PLACEHOLDER
+    SOURCE: "ASSUMPTION A-26: true h_crit known for 1 billet in 20 through discard sectioning or macro-etch audits. ACI needs this label feedback"
+  audit_delay:
+    value: 5
+    unit: cycles
+    status: PLACEHOLDER
+    SOURCE: "Assumed delay between the cut and the audit result reaching the model"
+
+decision:
+  latency_margin_mm:
+    value: 1.0
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "Ram travel between computing the cut and the ram reaching it (~80 ms at 12 mm/s plus stop distance); the decision commits this far above the cut"
+  update_every_mm:
+    value: 1.0
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "How often the recommendation is recomputed during the end of the stroke"
+  onset_sd_max_mm:
+    value: 2.0
+    unit: mm
+    status: PLACEHOLDER
+    SOURCE: "The onset model is used only once the onset posterior sd is below this. Just after the GLR alarm the extrapolated onset is still wide, and using it then forced premature, thick cuts (Task 3.3 trial run)"
+  chance_alpha:
+    value: 0.001
+    unit: "-"
+    status: PLACEHOLDER
+    SOURCE: "Allowed probability that h_crit exceeds the chance-constrained cut"
+  use_transition_width:
+    value: 1
+    unit: bool
+    status: PLACEHOLDER
+    SOURCE: "1: treat the clean-to-defective transition as smooth (config/defect.yaml width) when computing P(defect); 0: plan's step P(h < h_crit)"
+
+gibbs:
+  iterations:
+    value: 1500
+    unit: "-"
+    status: SOURCED
+    SOURCE: "Sampler setting, not a physical value; convergence checked in the fit report"
+  burn_in:
+    value: 500
+    unit: "-"
+    status: SOURCED
+    SOURCE: "Sampler setting"

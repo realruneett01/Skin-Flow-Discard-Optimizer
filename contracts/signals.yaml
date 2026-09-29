@@ -1,0 +1,290 @@
+# Shared data contract for the Press Value Platform.
+#
+# One entry per signal used by any of the three modules:
+#   dcto     = Dead-Cycle Timer Optimizer        (../DCTO)
+#   hpeo     = Hydraulic Pump Energy Optimizer   (../HPEO)
+#   skinflow = Skin-Flow Discard Optimizer       (this repo)
+#   plant    = PLC / MES, not owned by any module
+#
+# Fields:
+#   tag          OPC-UA NodeId (namespace index 2, string identifier)
+#   unit         SI-ish engineering unit as sent on the wire
+#   rate_hz      nominal sample rate; 0 means event-driven (one value per cycle or phase)
+#   type         float | int | bool | str | enum
+#   range        [min, max] valid range; values outside are rejected by the validator
+#   owner        module responsible for publishing the signal
+#   kind         measured | demand | derived | context
+#
+# Ranges are sanity limits for rejecting corrupt data, not process limits. They are
+# PLACEHOLDER values until checked against the real press (docs/assumptions.md A-03).
+
+version: 1
+namespace_index: 2
+
+signals:
+  cycle_id:
+    tag: "ns=2;s=Press01.State.CycleId"
+    unit: "-"
+    rate_hz: 0
+    type: int
+    range: [0, 100000000]
+    owner: dcto
+    kind: context
+    aliases: {dcto: "State/CycleNumber", hpeo: "PressTelemetry/CycleId"}
+
+  cycle_phase:
+    tag: "ns=2;s=Press01.State.CyclePhase"
+    unit: "-"
+    rate_hz: 0
+    type: enum
+    values: [idle, decompression, container_shift_open, shear_stroke, die_slide,
+             billet_load, container_shift_close, rapid_advance, extrusion, dwell]
+    owner: dcto
+    kind: context
+    aliases: {dcto: "State/CurrentPhase", hpeo: "PressTelemetry/PressPhase"}
+
+  ram_cap_pressure:
+    tag: "ns=2;s=Press01.Ram.CapPressure"
+    unit: bar
+    rate_hz: 1000
+    type: float
+    range: [-5.0, 400.0]
+    owner: skinflow
+    kind: measured
+
+  ram_rod_pressure:
+    tag: "ns=2;s=Press01.Ram.RodPressure"
+    unit: bar
+    rate_hz: 1000
+    type: float
+    range: [-5.0, 400.0]
+    owner: skinflow
+    kind: measured
+
+  ram_position:
+    tag: "ns=2;s=Press01.Ram.Position"
+    unit: mm
+    rate_hz: 1000
+    type: float
+    range: [-10.0, 2500.0]
+    owner: skinflow
+    kind: measured
+    aliases: {dcto: "Telemetry/ContainerPosition"}   # DCTO node is misnamed, see audit C5
+
+  container_position:
+    tag: "ns=2;s=Press01.Container.Position"
+    unit: mm
+    rate_hz: 100
+    type: float
+    range: [-10.0, 1000.0]
+    owner: plant
+    kind: measured
+
+  container_liner_temp_1:
+    tag: "ns=2;s=Press01.Container.LinerTemp1"
+    unit: degC
+    rate_hz: 1
+    type: float
+    range: [20.0, 600.0]
+    owner: skinflow
+    kind: measured
+
+  container_liner_temp_2:
+    tag: "ns=2;s=Press01.Container.LinerTemp2"
+    unit: degC
+    rate_hz: 1
+    type: float
+    range: [20.0, 600.0]
+    owner: skinflow
+    kind: measured
+
+  container_liner_temp_3:
+    tag: "ns=2;s=Press01.Container.LinerTemp3"
+    unit: degC
+    rate_hz: 1
+    type: float
+    range: [20.0, 600.0]
+    owner: skinflow
+    kind: measured
+
+  container_liner_temp_4:
+    tag: "ns=2;s=Press01.Container.LinerTemp4"
+    unit: degC
+    rate_hz: 1
+    type: float
+    range: [20.0, 600.0]
+    owner: skinflow
+    kind: measured
+
+  billet_temp:
+    tag: "ns=2;s=Press01.Billet.Temperature"
+    unit: degC
+    rate_hz: 0
+    type: float
+    range: [300.0, 600.0]
+    owner: plant
+    kind: measured
+
+  billet_length:
+    tag: "ns=2;s=Press01.Billet.Length"
+    unit: mm
+    rate_hz: 0
+    type: float
+    range: [100.0, 2000.0]
+    owner: plant
+    kind: measured
+
+  alloy_id:
+    tag: "ns=2;s=Press01.Billet.AlloyId"
+    unit: "-"
+    rate_hz: 0
+    type: str
+    owner: plant
+    kind: context
+
+  die_id:
+    tag: "ns=2;s=Press01.Die.DieId"
+    unit: "-"
+    rate_hz: 0
+    type: str
+    owner: plant
+    kind: context
+
+  oil_temp:
+    tag: "ns=2;s=Press01.HPU.OilTemperature"
+    unit: degC
+    rate_hz: 1
+    type: float
+    range: [0.0, 90.0]
+    owner: hpeo
+    kind: measured
+
+  pump_supply_pressure:
+    tag: "ns=2;s=Press01.HPU.SupplyPressure"
+    unit: bar
+    rate_hz: 100
+    type: float
+    range: [-5.0, 400.0]
+    owner: hpeo
+    kind: measured
+    aliases: {hpeo: "PressTelemetry/DemandPressure_Bar"}  # HPEO value is demand, not measured (audit C10)
+
+  pump_power:
+    tag: "ns=2;s=Press01.HPU.TotalPowerKW"
+    unit: kW
+    rate_hz: 10
+    type: float
+    range: [0.0, 3000.0]
+    owner: hpeo
+    kind: measured
+    aliases: {hpeo: "EnergyAndTariffs/InstantaneousPower_KW"}
+
+  pump_flow:
+    tag: "ns=2;s=Press01.HPU.TotalFlowLPM"
+    unit: L/min
+    rate_hz: 10
+    type: float
+    range: [0.0, 5000.0]
+    owner: hpeo
+    kind: demand
+    aliases: {hpeo: "PressTelemetry/DemandFlow_LPM"}
+
+  grid_tariff:
+    tag: "ns=2;s=Press01.Energy.GridTariffEURMWh"
+    unit: EUR/MWh
+    rate_hz: 0
+    type: float
+    range: [-500.0, 4000.0]
+    owner: hpeo
+    kind: context
+    aliases: {hpeo: "EnergyAndTariffs/GridTariff_EUR_MWh"}
+
+  valve_spool:
+    tag: "ns=2;s=Press01.Hydraulics.MainValveSpoolPct"
+    unit: "%"
+    rate_hz: 100
+    type: float
+    range: [0.0, 100.0]
+    owner: dcto
+    kind: measured
+    aliases: {dcto: "Telemetry/ProportionalValveSpool"}
+
+  butt_shear_position:
+    tag: "ns=2;s=Press01.Shear.Position"
+    unit: mm
+    rate_hz: 100
+    type: float
+    range: [-10.0, 800.0]
+    owner: dcto
+    kind: measured
+
+  shear_stroke_duration:
+    tag: "ns=2;s=Press01.Shear.StrokeDuration"
+    unit: s
+    rate_hz: 0
+    type: float
+    range: [0.0, 20.0]
+    owner: dcto
+    kind: derived
+
+# Canonical phase names and the names each existing project uses (audit C1, C2).
+phase_aliases:
+  dcto:
+    decompression: decompression
+    container_shift_open: container_shift_open
+    shear_stroke: shear_stroke
+    die_slide: die_slide
+    billet_load: billet_load
+    container_shift_close: container_shift_close
+    rapid_advance: rapid_advance
+    extrusion: extrusion
+  hpeo:
+    decompression: decompression
+    container_shift_open: container_shift_open
+    shear_stroke: shear_stroke
+    die_slide_shift: die_slide
+    billet_load_and_seal: billet_load
+    main_extrusion_stroke: extrusion
+    inter_billet_dwell: dwell
+
+# Advisory outputs. This is the ONLY namespace this module may write to.
+# Nothing here is a setpoint: the press PLC and the operator decide.
+outputs:
+  namespace: "Predictor"
+  signals:
+    Predictor.ButtCutMm:
+      tag: "ns=2;s=Predictor.ButtCutMm"
+      unit: mm
+      type: float
+      range: [0.0, 300.0]
+      description: "Recommended discard (butt) thickness for the current billet"
+    Predictor.CutIntervalLowMm:
+      tag: "ns=2;s=Predictor.CutIntervalLowMm"
+      unit: mm
+      type: float
+      range: [0.0, 300.0]
+      description: "Lower end of the calibrated interval on the recommended cut"
+    Predictor.CutIntervalHighMm:
+      tag: "ns=2;s=Predictor.CutIntervalHighMm"
+      unit: mm
+      type: float
+      range: [0.0, 300.0]
+      description: "Upper end of the calibrated interval on the recommended cut"
+    Predictor.CutConfidence:
+      tag: "ns=2;s=Predictor.CutConfidence"
+      unit: "-"
+      type: enum
+      values: [high, medium, low, fallback]
+      description: "Confidence label; 'fallback' means the conservative static cut is shown"
+    Predictor.DriftAlarm:
+      tag: "ns=2;s=Predictor.DriftAlarm"
+      unit: "-"
+      type: bool
+      description: "Multivariate monitor alarm (press drifting off its normal pattern)"
+    Predictor.FaultClass:
+      tag: "ns=2;s=Predictor.FaultClass"
+      unit: "-"
+      type: enum
+      values: [none, die_wear, liner_scale, sensor_gain_drift, encoder_offset,
+               lubricant_loss, temperature_drift, supply_pressure_sag, unknown]
+      description: "Most likely cause of the current drift"

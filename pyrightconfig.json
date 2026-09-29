@@ -1,0 +1,8 @@
+{
+	"venvPath": ".",
+	"venv": ".venv",
+	"include": ["skinflow_discard_optimizer", "tests"],
+	"exclude": ["data", "artifacts", "reports", ".venv"],
+	"pythonVersion": "3.14",
+	"typeCheckingMode": "standard"
+}

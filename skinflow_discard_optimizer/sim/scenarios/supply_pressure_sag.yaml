@@ -1,0 +1,7 @@
+name: supply_pressure_sag
+description: "HPU cooler degrades from cycle 5000: oil heats, supply pressure sags, ram slows, cap reading biased."
+seed: 1006
+n_cycles: 14000
+context: {alloy: AA6063, die_id: D-104, extrusion_ratio: 25.0}
+faults:
+  - {kind: supply_pressure_sag, onset_cycle: 5000, severity: 1.0, ramp: exp, ramp_cycles: 1500}
