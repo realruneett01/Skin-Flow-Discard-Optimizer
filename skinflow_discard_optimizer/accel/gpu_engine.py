@@ -70,35 +70,34 @@ def _pad(arrs: list[np.ndarray], T: int, fill: float = 0.0) -> np.ndarray:
 
 
 def batch_trajectories(engine: CutEngine, inputs: list[StrokeInputs] | None = None, device=None,
-                       chunk: int = 192, prepared: list[_Prepared] | None = None) -> list[DecisionTrajectory]:
+                       **kwargs) -> list[DecisionTrajectory]:
     """``engine.trajectory(si)`` for every input, computed in GPU batches.
 
     Pass ``prepared`` (from ``prepare_rows``) to skip the CPU preparation here.
     """
-    import torch
-
     from skinflow_discard_optimizer.accel import get_device
 
+    chunk: int = kwargs.get("chunk", 192)
+    prepared: list[_Prepared] | None = kwargs.get("prepared", None)
     dev = device or get_device()
     preps_all = prepared if prepared is not None else [_prepare(engine, si) for si in (inputs or [])]
     out: list[DecisionTrajectory] = []
     for a in range(0, len(preps_all), chunk):
-        out.extend(_run_chunk(engine, preps_all[a:a + chunk], dev, torch))
+        out.extend(_run_chunk(engine, preps_all[a:a + chunk], dev))
     return out
 
 
-def batch_features_at(engine: CutEngine, prepared: list[_Prepared], horizons: np.ndarray, device=None,
-                      chunk: int = 192) -> list[dict]:
+def batch_features_at(engine: CutEngine, prepared: list[_Prepared], horizons: np.ndarray,
+                      device=None, **kwargs) -> list[dict]:
     """``engine.features_at(si, horizon)`` for every stroke: state features plus the onset
     summary using gated data down to that stroke's horizon (training-set builder)."""
-    import torch
-
     from skinflow_discard_optimizer.accel import get_device
 
+    chunk: int = kwargs.get("chunk", 192)
     dev = device or get_device()
     out: list[dict] = []
     for a in range(0, len(prepared), chunk):
-        out.extend(_run_chunk(engine, prepared[a:a + chunk], dev, torch,
+        out.extend(_run_chunk(engine, prepared[a:a + chunk], dev,
                               horizons=np.asarray(horizons[a:a + chunk], float)))
     return out
 
@@ -138,8 +137,23 @@ def prepare_rows(rows: list[dict], workers: int | None = None) -> list[_Prepared
 
 # --------------------------------------------------------------------------- one chunk
 
-def _run_chunk(engine: CutEngine, preps: list[_Prepared], dev, torch, horizons: np.ndarray | None = None):
-    """Trajectories for a chunk of strokes, or (with ``horizons``) training feature rows."""
+@dataclass
+class _KalmanOutput:
+    nu: Any
+    S: Any
+    x: Any
+    P: Any
+    h: Any
+    frozen: Any
+    valid: Any
+    xb: Any
+    yb: Any
+    H: Any
+    lens: Any
+    r_var: Any
+
+
+def _run_kalman_batch(preps: list[_Prepared], dev, torch) -> _KalmanOutput:
     f64 = torch.float64
     N = len(preps)
     T = max(len(p.xb) for p in preps)
@@ -158,7 +172,6 @@ def _run_chunk(engine: CutEngine, preps: list[_Prepared], dev, torch, horizons: 
     x = t(np.stack([p.x0 for p in preps]))
     P = t(np.stack([p.P0 for p in preps]))
 
-    # ---------------------------------------------------------------- Kalman filter over phi
     nu = torch.zeros(N, T, dtype=f64, device=dev)
     S = torch.zeros(N, T, dtype=f64, device=dev)
     xprev = xb[:, 0].clone()
@@ -179,17 +192,167 @@ def _run_chunk(engine: CutEngine, preps: list[_Prepared], dev, torch, horizons: 
         P = 0.5 * (P + P.transpose(1, 2))
         nu[:, k], S[:, k] = nuk, Sk
 
-    # ---------------------------------------------------------------- gated sequences
-    gate_mask = (frozen & valid).cpu().numpy()
+    return _KalmanOutput(nu, S, x, P, h, frozen, valid, xb, yb, H, lens, r_var)
+
+
+def _compute_glr_sums(g_data: tuple, torch, dev):
+    """Compute GLR sums B, C and first firing indices for gated updates."""
+    hg, rg, Hg, gval, P, r_var = g_data
+    f64 = torch.float64
+    lam = torch.as_tensor(LAM_GRID, dtype=f64, device=dev)
+    R = r_var[:, None]
+    gv = gval.to(f64)
+    g = torch.exp(-hg[:, :, None] / lam) * gv[:, :, None]
+    rR = (rg * gv) / R
+    HR = Hg * gv[:, :, None]
+    Bg = torch.cumsum(g * rR[:, :, None], 1)
+    Cgg = torch.cumsum(g * g / R[:, :, None], 1)
+    cgH = torch.cumsum(g[..., None] * HR[:, :, None, :] / R[:, :, None, None], 1)
+    MHH = torch.cumsum(HR[..., :, None] * HR[..., None, :] / R[:, :, None, None], 1)
+    bH = torch.cumsum(HR * rR[:, :, None], 1)
+    Pinv = torch.linalg.inv(P + 1e-15 * torch.eye(3, dtype=f64, device=dev))
+    A = Pinv[:, None] + MHH
+    Ainv_b = torch.linalg.solve(A, bH[..., None]).squeeze(-1)
+    Ainv_c = torch.linalg.solve(A, cgH.transpose(-1, -2))
+    B = Bg - (cgH * Ainv_b[:, :, None, :]).sum(-1)
+    C = Cgg - torch.einsum("nglj,ngjl->ngl", cgH, Ainv_c)
+    del cgH, Ainv_c
+    llr = torch.where(B > 0, B * B / (2 * torch.clamp(C, min=1e-300)), torch.zeros_like(B))
+    stat = llr.max(-1).values
+    stat = torch.where(gval, stat, torch.zeros_like(stat))
+    fired = stat > 12.0
+    any_f = fired.any(1)
+    first_f = torch.where(any_f, fired.to(torch.int64).argmax(1), torch.full_like(any_f.to(torch.int64), -1)).cpu().numpy()
+    return B, C, first_f
+
+
+def _compute_checkpoints(hg_row: np.ndarray, update_every_mm: float) -> np.ndarray:
+    ck, nxt = [], np.inf
+    for j, val in enumerate(hg_row):
+        if val <= nxt:
+            nxt = val - update_every_mm
+            ck.append(j)
+    return np.array(ck, int)
+
+
+@dataclass
+class _TrajEvalContext:
+    first_f: int
+    bo_first: int
+    summ: dict
+    m0s0: tuple[float, float]
+    gap: tuple[float, float]
+    h_last: float
+    feat: dict
+    st: Any
+    summ_idx: int = 0
+
+
+def _update_onset_alarm(j: int, ctx: _TrajEvalContext, onset_state: list) -> tuple[tuple[float, float] | None, str]:
+    glr_on = ctx.first_f >= 0 and j >= ctx.first_f
+    bo_on = ctx.bo_first >= 0 and j >= ctx.bo_first
+    onset = onset_state[0]
+    if glr_on:
+        mean, sd = ctx.summ[(ctx.summ_idx, int(j))]
+        agree = bo_on and abs(onset_state[1] - onset_state[2]) <= 12.0
+        conf = "high" if agree else "low"
+        if sd <= ctx.st.onset_sd_max_mm:
+            onset = (mean, sd)
+            onset_state[0] = onset
+        return onset, conf
+    if bo_on:
+        return onset, "low"
+    return onset, "none"
+
+
+def _compute_prediction_at_step(onset, m0s0, gap):
+    if onset is None:
+        return m0s0[0], m0s0[1], np.nan, np.nan
+    gm, gvar = gap
+    return onset[0] + gm, math.sqrt(gvar + onset[1] ** 2), onset[0], onset[1]
+
+
+def _eval_checkpoint_step(j: int, ctx: _TrajEvalContext, onset_state: list) -> tuple[float, float, str, float, float]:
+    onset, conf = _update_onset_alarm(j, ctx, onset_state)
+    m, s, om, osd = _compute_prediction_at_step(onset, ctx.m0s0, ctx.gap)
+    return m, s, conf, om, osd
+
+
+def _build_single_traj(h_row: np.ndarray, ck_list: np.ndarray, ctx: _TrajEvalContext) -> DecisionTrajectory:
+    gf = float(h_row[ctx.first_f]) if ctx.first_f >= 0 else np.nan
+    bf = float(h_row[ctx.bo_first]) if ctx.bo_first >= 0 else np.nan
+    ms, ss, confs, om, osd = [], [], [], [], []
+    onset_state = [None, bf, gf]
+    for j in ck_list:
+        m, s, conf, om_val, osd_val = _eval_checkpoint_step(j, ctx, onset_state)
+        ms.append(m)
+        ss.append(s)
+        confs.append(conf)
+        om.append(om_val)
+        osd.append(osd_val)
+
+    return DecisionTrajectory(
+        h=h_row.astype(float), ck_idx=ck_list, m=np.array(ms), s=np.array(ss), conf=confs,
+        onset_mean=np.array(om), onset_sd=np.array(osd), glr_fired_h=gf, bocpd_fired_h=bf,
+        m0=ctx.m0s0[0], s0=ctx.m0s0[1], h_last=ctx.h_last, features=ctx.feat,
+    )
+
+
+@dataclass
+class _HorizonQuery:
+    hg: Any
+    g_lists: list
+    horizons: np.ndarray
+    first_f: np.ndarray
+
+
+def _eval_horizons_chunk(q: _HorizonQuery, feats: list, BC: tuple, a_ref: float):
+    hg_np = q.hg.cpu().numpy()
+    N = len(feats)
+    k_h = [int(np.sum(hg_np[i, :len(q.g_lists[i])] >= q.horizons[i])) - 1 for i in range(N)]
+    pairs = [(i, k) for i, k in enumerate(k_h) if k >= 0]
+    summ = _summaries(BC[0], BC[1], pairs, a_ref)
+    return [_features_row(feats[i], summ.get((i, k_h[i])), bool(q.first_f[i] >= 0 and q.first_f[i] <= k_h[i]))
+            for i in range(N)]
+
+
+def _build_trajectories_chunk(g_data: tuple, first_f, bo_first, summ, aux: tuple) -> list[DecisionTrajectory]:
+    hg_np, g_lists, ck_lists = g_data
+    m0s0, gap, h_last, feats, st = aux
+    trajs = []
+    for i in range(len(feats)):
+        n_i = len(g_lists[i])
+        ctx = _TrajEvalContext(
+            first_f=int(first_f[i]), bo_first=int(bo_first[i]), summ=summ,
+            m0s0=m0s0[i], gap=gap[i], h_last=h_last[i], feat=feats[i], st=st,
+            summ_idx=i,
+        )
+        trajs.append(_build_single_traj(hg_np[i, :n_i], ck_lists[i], ctx))
+    return trajs
+
+
+# --------------------------------------------------------------------------- one chunk
+
+def _run_chunk(engine: CutEngine, preps: list[_Prepared], dev=None, horizons: np.ndarray | None = None):
+    """Trajectories for a chunk of strokes, or (with ``horizons``) training feature rows."""
+    import torch
+    dev = dev or preps[0].xb.device if hasattr(preps[0].xb, 'device') else "cpu"
+    N = len(preps)
+    k_out = _run_kalman_batch(preps, dev, torch)
+    gate_mask = (k_out.frozen & k_out.valid).cpu().numpy()
     g_lists = [np.flatnonzero(gate_mask[i]) for i in range(N)]
     G = max((len(g) for g in g_lists), default=0)
-    phi = (x * t(PHI_SCALE)).cpu().numpy()
-    P_phys = (P * t(np.outer(PHI_SCALE, PHI_SCALE))).cpu().numpy()
+
+    f64 = torch.float64
+    t = lambda x: torch.as_tensor(np.asarray(x), dtype=f64, device=dev)  # noqa: E731
+    phi = (k_out.x * t(PHI_SCALE)).cpu().numpy()
+    P_phys = (k_out.P * t(np.outer(PHI_SCALE, PHI_SCALE))).cpu().numpy()
     feats = [state_features_from_phi(phi[i], P_phys[i], preps[i].si) for i in range(N)]
     m0s0 = _predict_prior(engine, feats)
     gap = _predict_gap(engine, feats)
-    h_np = h.cpu().numpy()
+    h_np = k_out.h.cpu().numpy()
     h_last = [float(h_np[i, len(preps[i].xb) - 1]) for i in range(N)]
+
     if G == 0:
         if horizons is not None:
             return [_features_row(feats[i], None, False) for i in range(N)]
@@ -198,95 +361,22 @@ def _run_chunk(engine: CutEngine, preps: list[_Prepared], dev, torch, horizons: 
     gidx = t(_pad([g.astype(float) for g in g_lists], G, fill=0.0)).long()
     gval = torch.arange(G, device=dev)[None, :] < torch.as_tensor([len(g) for g in g_lists], device=dev)[:, None]
     take = lambda a: torch.gather(a, 1, gidx)  # noqa: E731
-    hg, rg, Sg = take(h), take(nu), take(S)
-    Hg = torch.gather(H, 1, gidx[:, :, None].expand(-1, -1, 3))
-    gv = gval.to(f64)
+    hg, rg, Sg = take(k_out.h), take(k_out.nu), take(k_out.S)
+    Hg = torch.gather(k_out.H, 1, gidx[:, :, None].expand(-1, -1, 3))
 
-    # ---------------------------------------------------------------- GLR sums (all updates at once)
-    lam = t(LAM_GRID)
-    R = r_var[:, None]
-    g = torch.exp(-hg[:, :, None] / lam) * gv[:, :, None]             # (N, G, L)
-    rR = (rg * gv) / R
-    HR = Hg * gv[:, :, None]
-    Bg = torch.cumsum(g * rR[:, :, None], 1)
-    Cgg = torch.cumsum(g * g / R[:, :, None], 1)
-    cgH = torch.cumsum(g[..., None] * HR[:, :, None, :] / R[:, :, None, None], 1)       # (N, G, L, 3)
-    MHH = torch.cumsum(HR[..., :, None] * HR[..., None, :] / R[:, :, None, None], 1)     # (N, G, 3, 3)
-    bH = torch.cumsum(HR * rR[:, :, None], 1)                                          # (N, G, 3)
-    Pinv = torch.linalg.inv(P + 1e-15 * torch.eye(3, dtype=f64, device=dev))
-    A = Pinv[:, None] + MHH
-    Ainv_b = torch.linalg.solve(A, bH[..., None]).squeeze(-1)                         # (N, G, 3)
-    Ainv_c = torch.linalg.solve(A, cgH.transpose(-1, -2))                              # (N, G, 3, L)
-    B = Bg - (cgH * Ainv_b[:, :, None, :]).sum(-1)
-    C = Cgg - torch.einsum("nglj,ngjl->ngl", cgH, Ainv_c)
-    del cgH, Ainv_c
-    llr = torch.where(B > 0, B * B / (2 * torch.clamp(C, min=1e-300)), torch.zeros_like(B))
-    stat = llr.max(-1).values
-    stat = torch.where(gval, stat, torch.zeros_like(stat))
-    thr = 12.0
-    fired = stat > thr
-    any_f = fired.any(1)
-    first_f = torch.where(any_f, fired.to(torch.int64).argmax(1), torch.full_like(lens, -1)).cpu().numpy()
+    B, C, first_f = _compute_glr_sums((hg, rg, Hg, gval, k_out.P, k_out.r_var), torch, dev)
 
-    if horizons is not None:     # training rows: onset summary at the last gated update above each horizon
-        hg_np = hg.cpu().numpy()
-        k_h = [int(np.sum(hg_np[i, :len(g_lists[i])] >= horizons[i])) - 1 for i in range(N)]
-        pairs = [(i, k) for i, k in enumerate(k_h) if k >= 0]
-        summ = _summaries(B, C, pairs, engine.press.amplitude_at_onset_N, torch, dev)
-        return [_features_row(feats[i], summ.get((i, k_h[i])), bool(first_f[i] >= 0 and first_f[i] <= k_h[i]))
-                for i in range(N)]
+    if horizons is not None:
+        q = _HorizonQuery(hg, g_lists, horizons, first_f)
+        return _eval_horizons_chunk(q, feats, (B, C), engine.press.amplitude_at_onset_N)
 
-    # ---------------------------------------------------------------- BOCPD (sequential over updates)
     bo_first = _bocpd_batch(rg / torch.sqrt(Sg), gval, torch, dev)
-
-    # ---------------------------------------------------------------- checkpoints and summaries
     hg_np = hg.cpu().numpy()
     st = engine.st
-    ck_lists = []
-    for i in range(N):
-        n_i = len(g_lists[i])
-        ck, nxt = [], np.inf
-        for j in range(n_i):
-            if hg_np[i, j] <= nxt:
-                nxt = hg_np[i, j] - st.update_every_mm
-                ck.append(j)
-        ck_lists.append(np.array(ck, int))
+    ck_lists = [_compute_checkpoints(hg_np[i, :len(g_lists[i])], st.update_every_mm) for i in range(N)]
     pairs = [(i, j) for i in range(N) for j in ck_lists[i] if first_f[i] >= 0 and j >= first_f[i]]
-    summ = _summaries(B, C, pairs, engine.press.amplitude_at_onset_N, torch, dev)
-
-    trajs = []
-    for i in range(N):
-        n_i = len(g_lists[i])
-        gf = float(hg_np[i, first_f[i]]) if first_f[i] >= 0 else np.nan
-        bf = float(hg_np[i, bo_first[i]]) if bo_first[i] >= 0 else np.nan
-        ms, ss, confs, om, osd = [], [], [], [], []
-        conf, onset = "none", None
-        for j in ck_lists[i]:
-            glr_on = first_f[i] >= 0 and j >= first_f[i]
-            bo_on = bo_first[i] >= 0 and j >= bo_first[i]
-            if glr_on:
-                mean, sd = summ[(i, int(j))]
-                agree = bo_on and abs(bf - gf) <= 12.0
-                conf = "high" if agree else "low"
-                if sd <= st.onset_sd_max_mm:
-                    onset = (mean, sd)
-            elif bo_on:
-                conf = "low"
-            if onset is None:
-                m, s = m0s0[i]
-            else:
-                gm, gvar = gap[i]
-                m, s = onset[0] + gm, math.sqrt(gvar + onset[1] ** 2)
-            ms.append(m)
-            ss.append(s)
-            confs.append(conf)
-            om.append(onset[0] if onset else np.nan)
-            osd.append(onset[1] if onset else np.nan)
-        trajs.append(DecisionTrajectory(
-            h=hg_np[i, :n_i].astype(float), ck_idx=ck_lists[i], m=np.array(ms), s=np.array(ss), conf=confs,
-            onset_mean=np.array(om), onset_sd=np.array(osd), glr_fired_h=gf, bocpd_fired_h=bf,
-            m0=m0s0[i][0], s0=m0s0[i][1], h_last=h_last[i], features=feats[i]))
-    return trajs
+    summ = _summaries(B, C, pairs, engine.press.amplitude_at_onset_N)
+    return _build_trajectories_chunk((hg_np, g_lists, ck_lists), first_f, bo_first, summ, (m0s0, gap, h_last, feats, st))
 
 
 def _features_row(f: dict, summary: tuple[float, float] | None, fired: bool) -> dict:
@@ -361,21 +451,46 @@ def _bocpd_batch(z, gval, torch, dev) -> np.ndarray:
     return first.cpu().numpy()
 
 
-def _summaries(B, C, pairs, a_ref: float, torch, dev, sub: int = 256) -> dict:
+def _refine_narrow_posterior(p, sd, b, c, a_ref: float):
+    import torch
+    dev = b.device
+    f64 = b.dtype
+    lam = torch.as_tensor(LAM_GRID, dtype=f64, device=dev)
+    hgrid = torch.as_tensor(H_GRID, dtype=f64, device=dev)
+    step = float(H_GRID[1] - H_GRID[0])
+    mode = hgrid[p.argmax(1)]
+    half = torch.clamp(10 * torch.clamp(sd, min=step), min=1.0)
+    lo = torch.clamp(mode - half, min=float(H_GRID[0]))
+    hi = torch.clamp(mode + half, max=float(H_GRID[-1]))
+    u = torch.linspace(0, 1, 801, dtype=f64, device=dev)
+    hh = lo[:, None] + (hi - lo)[:, None] * u[None, :]
+    a = a_ref * torch.exp(torch.clamp(hh[:, :, None] / lam, max=60.0))
+    l2 = torch.logsumexp(a * b[:, None, :] - 0.5 * a * a * c[:, None, :], 2)
+    l2 = l2 - torch.logsumexp(l2, 1, keepdim=True)
+    p2 = torch.exp(l2)
+    m2 = (p2 * hh).sum(1)
+    sd2 = torch.sqrt((p2 * (hh - m2[:, None]) ** 2).sum(1))
+    return m2, sd2
+
+
+def _summaries(B, C, pairs: list, a_ref: float) -> dict:
     """Posterior mean and sd of the onset at (stroke, update) pairs, as ``OnsetGLR.summary`` computes them."""
     out: dict = {}
     if not pairs:
         return out
+    import torch
+    dev = B.device
     f64 = torch.float64
     lam = torch.as_tensor(LAM_GRID, dtype=f64, device=dev)
     hgrid = torch.as_tensor(H_GRID, dtype=f64, device=dev)
     step = float(H_GRID[1] - H_GRID[0])
-    a_tab = a_ref * torch.exp(torch.clamp(hgrid[:, None] / lam[None, :], max=60.0))       # (Hn, L)
+    a_tab = a_ref * torch.exp(torch.clamp(hgrid[:, None] / lam[None, :], max=60.0))
+    sub = 256
     for s0 in range(0, len(pairs), sub):
         pp = pairs[s0:s0 + sub]
         ii = torch.as_tensor([p[0] for p in pp], device=dev)
         jj = torch.as_tensor([p[1] for p in pp], device=dev)
-        b = B[ii, jj]                                   # (P, L)
+        b = B[ii, jj]
         c = C[ii, jj]
         ll = a_tab[None] * b[:, None, :] - 0.5 * a_tab[None] ** 2 * c[:, None, :]
         lp = torch.logsumexp(ll, 2)
@@ -383,21 +498,9 @@ def _summaries(B, C, pairs, a_ref: float, torch, dev, sub: int = 256) -> dict:
         p = torch.exp(lp)
         mean = (p * hgrid).sum(1)
         sd = torch.sqrt((p * (hgrid - mean[:, None]) ** 2).sum(1))
-        # local refinement where the posterior is narrower than the base grid can resolve
         need = sd < 5 * step
         if need.any():
-            mode = hgrid[p.argmax(1)]
-            half = torch.clamp(10 * torch.clamp(sd, min=step), min=1.0)
-            lo = torch.clamp(mode - half, min=float(H_GRID[0]))
-            hi = torch.clamp(mode + half, max=float(H_GRID[-1]))
-            u = torch.linspace(0, 1, 801, dtype=f64, device=dev)
-            hh = lo[:, None] + (hi - lo)[:, None] * u[None, :]                 # (P, 801)
-            a = a_ref * torch.exp(torch.clamp(hh[:, :, None] / lam, max=60.0))  # (P, 801, L)
-            l2 = torch.logsumexp(a * b[:, None, :] - 0.5 * a * a * c[:, None, :], 2)
-            l2 = l2 - torch.logsumexp(l2, 1, keepdim=True)
-            p2 = torch.exp(l2)
-            m2 = (p2 * hh).sum(1)
-            sd2 = torch.sqrt((p2 * (hh - m2[:, None]) ** 2).sum(1))
+            m2, sd2 = _refine_narrow_posterior(p, sd, b, c, a_ref)
             mean = torch.where(need, m2, mean)
             sd = torch.where(need, sd2, sd)
         for (i, j), mv, sv in zip(pp, mean.cpu().numpy(), sd.cpu().numpy()):

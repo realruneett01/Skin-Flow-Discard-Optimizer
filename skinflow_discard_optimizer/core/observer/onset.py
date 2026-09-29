@@ -47,6 +47,16 @@ LAM_GRID = np.geomspace(2.5, 15.0, 64)   # fine: late in the stroke the data pin
 H_GRID = np.arange(5.0, 90.0, 0.1)
 
 
+def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, any]]) -> dict:
+    res = {}
+    for i, (k, default) in enumerate(spec):
+        if i < len(args):
+            res[k] = args[i]
+        else:
+            res[k] = kwargs.get(k, default)
+    return res
+
+
 def observable_onset(h_onset_mm: float, lam_mm: float, amp_N: float, a_ref_N: float) -> float:
     """Thickness where ``F_up`` reaches ``a_ref`` for a simulated stroke.
 
@@ -59,52 +69,54 @@ def observable_onset(h_onset_mm: float, lam_mm: float, amp_N: float, a_ref_N: fl
 
 
 class OnsetGLR:
-    """Sequential GLR test and grid posterior over the onset position.
+    """Sequential GLR test and grid posterior over the onset position."""
 
-    Two noise models:
-
-    * independent (``baseline_cov=None``): each residual ~ N(0, S_k);
-    * marginalised (``baseline_cov`` = the frozen filter's phi covariance P, plus the
-      per-update measurement variance ``noise_var`` and each update's regressor row
-      ``H``): ``r_k = a*g_k + H_k @ delta + e_k`` with ``delta ~ N(0, P)`` shared by
-      *all* residuals and ``e_k ~ N(0, noise_var)``. Treating residuals as
-      independent ignores that the frozen baseline's error is common to all of them
-      and makes the onset posterior overconfident. Integrating ``delta`` out keeps the
-      closed form: ``B`` and ``C`` become ``B - c' A^-1 b`` and ``C - c' A^-1 c`` with
-      ``A = P^-1 + sum H H'/R``, ``b = sum H r/R`` and ``c = sum g H/R``.
-    """
-
-    def __init__(self, a_ref_N: float, threshold: float = 12.0, lam_grid: np.ndarray = LAM_GRID,
-                 h_grid: np.ndarray = H_GRID, h_prior: np.ndarray | None = None,
-                 lam_log_prior: np.ndarray | None = None, baseline_cov: np.ndarray | None = None,
-                 noise_var: float | None = None):
-        self.a_ref = a_ref_N
-        self.threshold = threshold
-        self.lam = np.asarray(lam_grid, float)
-        self.h = np.asarray(h_grid, float)
+    def __init__(self, *args, **kwargs):
+        spec = [
+            ("a_ref_N", None),
+            ("threshold", 12.0),
+            ("lam_grid", LAM_GRID),
+            ("h_grid", H_GRID),
+            ("h_prior", None),
+            ("lam_log_prior", None),
+            ("baseline_cov", None),
+            ("noise_var", None),
+        ]
+        p = _parse_named_args(args, kwargs, spec)
+        self.a_ref = p["a_ref_N"]
+        self.threshold = p["threshold"]
+        self.lam = np.asarray(p["lam_grid"], float)
+        self.h = np.asarray(p["h_grid"], float)
         nl = len(self.lam)
         self.Bg = np.zeros(nl)
         self.Cgg = np.zeros(nl)
-        self.marginal = baseline_cov is not None
+        self.marginal = p["baseline_cov"] is not None
         if self.marginal:
-            if noise_var is None:
-                raise ValueError("marginalised mode needs noise_var")
-            self.R = float(noise_var)
-            self._scale = np.array([1.0, 1.0, 1e6])       # work in scaled phi (F_tool in MN)
-            P = np.asarray(baseline_cov) / np.outer(self._scale, self._scale)
-            self.Pinv = np.linalg.inv(P + 1e-15 * np.eye(3))
-            self.cgH = np.zeros((nl, 3))
-            self.MHH = np.zeros((3, 3))
-            self.bH = np.zeros(3)
+            self._init_marginal(p["baseline_cov"], p["noise_var"], nl)
+        h_prior = p["h_prior"]
         self.log_prior_h = np.zeros_like(self.h) if h_prior is None else np.log(np.maximum(h_prior, 1e-300))
+        lam_log_prior = p["lam_log_prior"]
         self.log_prior_lam = np.zeros_like(self.lam) if lam_log_prior is None else lam_log_prior
-        # a = A_ref * exp(h_on / lam), as a (n_h, n_lam) table
         self._a = self.a_ref * np.exp(np.clip(self.h[:, None] / self.lam[None, :], None, 60.0))
         self.stat = 0.0
         self.fired_at_h: float | None = None
         self.n = 0
 
-    def update(self, h_mm: float, r: float, S: float, H: np.ndarray | None = None) -> float:
+    def _init_marginal(self, baseline_cov, noise_var, nl: int) -> None:
+        if noise_var is None:
+            raise ValueError("marginalised mode needs noise_var")
+        self.R = float(noise_var)
+        self._scale = np.array([1.0, 1.0, 1e6])       # work in scaled phi (F_tool in MN)
+        P = np.asarray(baseline_cov) / np.outer(self._scale, self._scale)
+        self.Pinv = np.linalg.inv(P + 1e-15 * np.eye(3))
+        self.cgH = np.zeros((nl, 3))
+        self.MHH = np.zeros((3, 3))
+        self.bH = np.zeros(3)
+
+    def update(self, *args, **kwargs) -> float:
+        spec = [("h_mm", None), ("r", None), ("S", None), ("H", None)]
+        p = _parse_named_args(args, kwargs, spec)
+        h_mm, r, S, H = p["h_mm"], p["r"], p["S"], p["H"]
         g = np.exp(-h_mm / self.lam)
         if self.marginal:
             if H is None:
@@ -156,12 +168,7 @@ class OnsetGLR:
         return logsumexp(ll, axis=1) + lph
 
     def summary(self) -> dict:
-        """Posterior mean, sd, 5/95% quantiles and MAP of the onset thickness.
-
-        Once the data are informative the posterior is far narrower than the base
-        grid step, so it is re-evaluated on a fine local grid around the mode;
-        otherwise the quantiles would collapse into one grid cell.
-        """
+        """Posterior mean, sd, 5/95% quantiles and MAP of the onset thickness."""
         p = self.posterior()
         mean = float(p @ self.h)
         sd = float(np.sqrt(p @ (self.h - mean) ** 2))
@@ -185,14 +192,22 @@ class OnsetGLR:
 class BOCPD:
     """Bayesian online change-point detection, Normal data with unknown mean and unit variance."""
 
-    def __init__(self, hazard: float = 1 / 2000, mu0: float = 0.0, var0: float = 4.0,
-                 recent: int = 25, p_fire: float = 0.9, max_run: int = 3000):
-        self.h = hazard
-        self.mu0, self.var0 = mu0, var0
-        self.recent, self.p_fire, self.max_run = recent, p_fire, max_run
+    def __init__(self, *args, **kwargs):
+        spec = [
+            ("hazard", 1 / 2000),
+            ("mu0", 0.0),
+            ("var0", 4.0),
+            ("recent", 25),
+            ("p_fire", 0.9),
+            ("max_run", 3000),
+        ]
+        p = _parse_named_args(args, kwargs, spec)
+        self.h = p["hazard"]
+        self.mu0, self.var0 = p["mu0"], p["var0"]
+        self.recent, self.p_fire, self.max_run = p["recent"], p["p_fire"], p["max_run"]
         self.log_r = np.array([0.0])          # run-length log posterior
-        self.mu = np.array([mu0])             # posterior mean of segment mean, per run length
-        self.var = np.array([var0])
+        self.mu = np.array([self.mu0])        # posterior mean of segment mean, per run length
+        self.var = np.array([self.var0])
         self.t = 0
         self.fired_at_h: float | None = None
         self.change_at_h: float | None = None
@@ -235,24 +250,22 @@ class OnsetResult:
     confidence: str
     posterior_h: np.ndarray = field(repr=False, default_factory=lambda: H_GRID)
     posterior: np.ndarray = field(repr=False, default_factory=lambda: np.zeros_like(H_GRID))
-    # posterior summaries tracked as data arrived: (h at update, mean, sd) every few updates
     track: np.ndarray = field(repr=False, default_factory=lambda: np.zeros((0, 3)))
 
 
-def detect_onset(h_mm: np.ndarray, r: np.ndarray, S: np.ndarray, a_ref_N: float,
-                 glr_threshold: float = 12.0, agree_mm: float = 12.0, h_prior: np.ndarray | None = None,
-                 track_every: int = 5, stop_after_fire_mm: float | None = None,
-                 bocpd: BOCPD | None = None, H: np.ndarray | None = None,
-                 baseline_cov: np.ndarray | None = None, noise_var: float | None = None) -> OnsetResult:
-    """Run both detectors over gated, frozen-baseline residuals (in time order).
+def _determine_confidence(g: float | None, b: float | None, agree_mm: float) -> str:
+    if g is None and b is None:
+        return "none"
+    if g is not None and b is not None and abs(g - b) <= agree_mm:
+        return "high"
+    return "low"
 
-    Pass ``H``, ``baseline_cov`` and ``noise_var`` (from the frozen ``UKFTrace``) to
-    marginalise the shared baseline error; that is the default in the pipeline.
-    ``stop_after_fire_mm``: stop feeding data this far past the GLR alarm, to mimic a
-    decision taken shortly after detection. None uses everything given.
-    """
-    glr = OnsetGLR(a_ref_N, glr_threshold, h_prior=h_prior, baseline_cov=baseline_cov, noise_var=noise_var)
-    bo = bocpd or BOCPD()
+
+def _feed_detectors(glr: OnsetGLR, bo: BOCPD,
+                    feed_data: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None],
+                    opts: tuple[int, float | None]) -> list:
+    h_mm, r, S, H = feed_data
+    track_every, stop_after_fire_mm = opts
     track = []
     for k, (hh, rr, ss) in enumerate(zip(h_mm, r, S)):
         glr.update(hh, rr, ss, None if H is None else H[k])
@@ -260,39 +273,47 @@ def detect_onset(h_mm: np.ndarray, r: np.ndarray, S: np.ndarray, a_ref_N: float,
         if k % track_every == 0:
             s = glr.summary()
             track.append((hh, s["h_onset_mean"], s["h_onset_sd"]))
-        if stop_after_fire_mm is not None and glr.fired_at_h is not None and glr.fired_at_h - hh >= stop_after_fire_mm:
-            break
+        if stop_after_fire_mm is not None and glr.fired_at_h is not None:
+            if glr.fired_at_h - hh >= stop_after_fire_mm:
+                break
+    return track
+
+
+def detect_onset(*args, **kwargs) -> OnsetResult:
+    """Run both detectors over gated, frozen-baseline residuals (in time order)."""
+    spec = [
+        ("h_mm", None),
+        ("r", None),
+        ("S", None),
+        ("a_ref_N", None),
+        ("glr_threshold", 12.0),
+        ("agree_mm", 12.0),
+        ("h_prior", None),
+        ("track_every", 5),
+        ("stop_after_fire_mm", None),
+        ("bocpd", None),
+        ("H", None),
+        ("baseline_cov", None),
+        ("noise_var", None),
+    ]
+    p = _parse_named_args(args, kwargs, spec)
+    glr = OnsetGLR(p["a_ref_N"], p["glr_threshold"], h_prior=p["h_prior"],
+                   baseline_cov=p["baseline_cov"], noise_var=p["noise_var"])
+    bo = p["bocpd"] or BOCPD()
+    feed_data = (p["h_mm"], p["r"], p["S"], p["H"])
+    opts = (p["track_every"], p["stop_after_fire_mm"])
+    track = _feed_detectors(glr, bo, feed_data, opts)
     s = glr.summary()
     g, b = glr.fired_at_h, bo.fired_at_h
-    if g is None and b is None:
-        conf = "none"
-    elif g is not None and b is not None and abs(g - b) <= agree_mm:
-        conf = "high"
-    else:
-        conf = "low"
+    conf = _determine_confidence(g, b, p["agree_mm"])
     return OnsetResult(s["h_onset_mean"], s["h_onset_sd"], s["h_onset_q05"], s["h_onset_q95"], g, b,
                        bo.change_at_h, conf, glr.h.copy(), glr.posterior(), np.array(track))
 
 
 # --------------------------------------------------------------------------- naive baseline
 
-def naive_second_derivative(x_mm: np.ndarray, force_N: np.ndarray, L0_mm: float, h_gate_mm: float,
-                            h_stop_mm: float, k_sigma: float = 6.0, window_mm: float = 4.0,
-                            dx_mm: float = 0.25, offset_mm: float = 0.0) -> tuple[float | None, float | None]:
-    """Causal second-derivative threshold. Returns ``(h_detect, h_onset_estimate)``.
-
-    The second derivative of force versus position (causal Savitzky-Golay, past
-    samples only) is compared with ``k_sigma`` robust sds of its value over the
-    first half of the gated region. The first exceedance gives ``h_detect``, and
-    the onset estimate is ``h_detect - offset_mm`` (offset calibrated on training
-    strokes).
-    """
-    keep = (L0_mm - x_mm) >= h_stop_mm
-    c = resample_to_position(x_mm[keep], force_N[keep], dx_mm, x_min=L0_mm - h_gate_mm - 30.0)
-    h = L0_mm - c.x_mm
-    w = max(int(window_mm / dx_mm) | 1, 7)
-    d2 = sg_derivative(c.force_N, w, 2, dx_mm, polyorder=2, causal=True)
-    gated = h <= h_gate_mm
+def _evaluate_threshold_peak(gated: np.ndarray, h: np.ndarray, d2: np.ndarray,
+                             h_gate_mm: float, k_sigma: float, offset_mm: float) -> tuple[float | None, float | None]:
     ref = gated & (h > h_gate_mm - 40.0)
     ref_vals = d2[ref & np.isfinite(d2)]
     if ref_vals.size < 10:
@@ -304,3 +325,30 @@ def naive_second_derivative(x_mm: np.ndarray, force_N: np.ndarray, L0_mm: float,
         return None, None
     hd = float(h[hit[0]])
     return hd, hd - offset_mm
+
+
+def naive_second_derivative(*args, **kwargs) -> tuple[float | None, float | None]:
+    """Causal second-derivative threshold. Returns ``(h_detect, h_onset_estimate)``."""
+    spec = [
+        ("x_mm", None),
+        ("force_N", None),
+        ("L0_mm", None),
+        ("h_gate_mm", None),
+        ("h_stop_mm", None),
+        ("k_sigma", 6.0),
+        ("window_mm", 4.0),
+        ("dx_mm", 0.25),
+        ("offset_mm", 0.0),
+    ]
+    p = _parse_named_args(args, kwargs, spec)
+    x_mm, force_N, L0_mm = p["x_mm"], p["force_N"], p["L0_mm"]
+    h_gate_mm, h_stop_mm = p["h_gate_mm"], p["h_stop_mm"]
+    k_sigma, window_mm, dx_mm, offset_mm = p["k_sigma"], p["window_mm"], p["dx_mm"], p["offset_mm"]
+
+    keep = (L0_mm - x_mm) >= h_stop_mm
+    c = resample_to_position(x_mm[keep], force_N[keep], dx_mm, x_min=L0_mm - h_gate_mm - 30.0)
+    h = L0_mm - c.x_mm
+    w = max(int(window_mm / dx_mm) | 1, 7)
+    d2 = sg_derivative(c.force_N, w, 2, dx_mm, polyorder=2, causal=True)
+    gated = h <= h_gate_mm
+    return _evaluate_threshold_peak(gated, h, d2, h_gate_mm, k_sigma, offset_mm)

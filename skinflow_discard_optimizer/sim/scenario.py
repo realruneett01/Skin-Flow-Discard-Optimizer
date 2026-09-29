@@ -94,6 +94,72 @@ def stroke_seed(scenario_seed: int, cycle: int) -> int:
     return int(np.random.SeedSequence([scenario_seed, cycle]).generate_state(1)[0])
 
 
+def _apply_die_change(ev: Event, ctx: CycleContext, process: PressProcess, n: int) -> CycleContext:
+    new_ctx = replace(
+        ctx,
+        die_id=ev.params.get("die_id", ctx.die_id),
+        extrusion_ratio=float(ev.params.get("extrusion_ratio", ctx.extrusion_ratio)),
+    )
+    process.set_baseline(die_wear=float(ev.params.get("die_wear", 0.02)))
+    process.reset_ou("die_wear")
+    process.faults = [f for f in process.faults if f.kind != "die_wear" or f.onset_cycle > n]
+    return new_ctx
+
+
+def _apply_alloy_change(
+    alloy: Alloy, model: DefectModel, ctx: CycleContext, process: PressProcess
+) -> tuple[DefectModel, CycleContext]:
+    new_model = model.with_alloy(alloy)
+    new_ctx = replace(ctx, alloy=alloy.name)
+    process.set_baseline(mu_base=alloy.mu_nominal)
+    return new_model, new_ctx
+
+
+def _compute_cold_offsets(cold: tuple[float, float, float, int] | None, n: int) -> dict[str, float] | None:
+    if cold is None:
+        return None
+    decay = float(np.exp(-(n - cold[3]) / cold[2]))
+    return {"liner_temp_C": -cold[0] * decay, "billet_temp_C": -cold[1] * decay}
+
+
+def _format_scenario_row(row: dict, scn_name: str, extra: dict[str, float] | None, extrusion_ratio: float) -> dict:
+    row["scenario"] = scn_name
+    row["event_cold_start"] = float(extra["liner_temp_C"]) if extra else 0.0
+    row["extrusion_ratio"] = extrusion_ratio
+    return row
+
+
+class _ScenarioRunner:
+    def __init__(self, scn: Scenario, model: DefectModel, process: PressProcess) -> None:
+        self.ctx = scn.context
+        self.model = model
+        self.process = process
+        self.cold: tuple[float, float, float, int] | None = None
+        self.alloy_cache: dict[str, Alloy] = {scn.context.alloy: model.alloy}
+        for ev in scn.events:
+            if ev.type == "alloy_change" and ev.params.get("alloy") not in self.alloy_cache:
+                self.alloy_cache[ev.params["alloy"]] = Alloy.from_config(ev.params["alloy"])
+
+    def apply_event(self, ev: Event, n: int) -> None:
+        if ev.type == "die_change":
+            self.ctx = _apply_die_change(ev, self.ctx, self.process, n)
+        elif ev.type == "alloy_change":
+            self.model, self.ctx = _apply_alloy_change(
+                self.alloy_cache[ev.params["alloy"]], self.model, self.ctx, self.process
+            )
+        elif ev.type == "cold_start":
+            self.cold = (
+                float(ev.params.get("liner_drop_K", 60.0)),
+                float(ev.params.get("billet_drop_K", 10.0)),
+                float(ev.params.get("tau_cycles", 40.0)),
+                n,
+            )
+
+    def drain_events(self, events: list[Event], n: int) -> None:
+        while events and events[0].cycle <= n:
+            self.apply_event(events.pop(0), n)
+
+
 def run_scenario(scn: Scenario, *, keep_strokes: bool = False, start: int = 0,
                  stop: int | None = None) -> Iterator[tuple[dict, StrokeData | None]]:
     """Yield ``(row, stroke)`` for each cycle. ``stroke`` is None unless ``keep_strokes``.
@@ -115,40 +181,18 @@ def run_scenario(scn: Scenario, *, keep_strokes: bool = False, start: int = 0,
     truth_rng = np.random.default_rng(truth_seed)
     process = PressProcess(base, list(scn.faults), FaultConfig.load(press.supply_pressure_nominal_bar),
                            np.random.default_rng(proc_seed))
-    ctx = scn.context
-    cold: tuple[float, float, float, int] | None = None   # (liner_drop, billet_drop, tau, start)
+    runner = _ScenarioRunner(scn, model, process)
     events = list(scn.events)
     stop = scn.n_cycles if stop is None else min(stop, scn.n_cycles)
 
     for n in range(stop):
-        while events and events[0].cycle <= n:
-            ev = events.pop(0)
-            if ev.type == "die_change":
-                ctx = replace(ctx, die_id=ev.params.get("die_id", ctx.die_id),
-                              extrusion_ratio=float(ev.params.get("extrusion_ratio", ctx.extrusion_ratio)))
-                process.set_baseline(die_wear=float(ev.params.get("die_wear", 0.02)))
-                process.reset_ou("die_wear")
-                # a new die restarts wear-type faults
-                process.faults = [f for f in process.faults if f.kind != "die_wear"
-                                  or f.onset_cycle > n]
-            elif ev.type == "alloy_change":
-                alloy = Alloy.from_config(ev.params["alloy"])
-                model = model.with_alloy(alloy)
-                ctx = replace(ctx, alloy=alloy.name)
-                process.set_baseline(mu_base=alloy.mu_nominal)
-            elif ev.type == "cold_start":
-                cold = (float(ev.params.get("liner_drop_K", 60.0)), float(ev.params.get("billet_drop_K", 10.0)),
-                        float(ev.params.get("tau_cycles", 40.0)), n)
-        extra = None
-        if cold is not None:
-            decay = np.exp(-(n - cold[3]) / cold[2])
-            extra = {"liner_temp_C": -cold[0] * decay, "billet_temp_C": -cold[1] * decay}
-        cond = process.step(n, extra_offsets=extra)
+        runner.drain_events(events, n)
+        extra = _compute_cold_offsets(runner.cold, n)
+        cond = runner.process.step(n, extra_offsets=extra)
         # truth_rng must advance every cycle, even ones not yielded, to keep rows identical
-        row, stroke = simulate_cycle(cond, model, ctx, stroke_seed(scn.seed, n), truth_rng,
-                                     full_stroke=keep_strokes and n >= start)
+        row, stroke = simulate_cycle(
+            cond, runner.model, runner.ctx, stroke_seed(scn.seed, n), truth_rng,
+            full_stroke=keep_strokes and n >= start,
+        )
         if n >= start:
-            row["scenario"] = scn.name
-            row["event_cold_start"] = float(extra["liner_temp_C"]) if extra else 0.0
-            row["extrusion_ratio"] = ctx.extrusion_ratio
-            yield row, stroke
+            yield _format_scenario_row(row, scn.name, extra, runner.ctx.extrusion_ratio), stroke

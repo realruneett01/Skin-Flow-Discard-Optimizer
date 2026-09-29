@@ -137,6 +137,16 @@ class StrokeContext:
 
 # --------------------------------------------------------------------------- unscented machinery
 
+def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, any]]) -> dict:
+    res = {}
+    for i, (k, default) in enumerate(spec):
+        if i < len(args):
+            res[k] = args[i]
+        else:
+            res[k] = kwargs.get(k, default)
+    return res
+
+
 def _weights(n: int, alpha: float, beta: float, kappa: float):
     lam = alpha**2 * (n + kappa) - n
     c = n + lam
@@ -152,10 +162,12 @@ def _sigma_points(m: np.ndarray, P: np.ndarray, c: float) -> np.ndarray:
     return np.vstack([m, m + L.T, m - L.T])
 
 
-def unscented_transform(m: np.ndarray, P: np.ndarray, fn, alpha: float = 1.0, beta: float = 2.0,
-                        kappa: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+def unscented_transform(*args, **kwargs) -> tuple[np.ndarray, np.ndarray]:
     """Mean and covariance of ``fn(X)`` for X ~ N(m, P); ``fn`` maps (2n+1, n) -> (2n+1, d)."""
-    c, wm, wc = _weights(len(m), alpha, beta, kappa)
+    spec = [("m", None), ("P", None), ("fn", None), ("alpha", 1.0), ("beta", 2.0), ("kappa", 0.0)]
+    p = _parse_named_args(args, kwargs, spec)
+    m, P, fn = p["m"], p["P"], p["fn"]
+    c, wm, wc = _weights(len(m), p["alpha"], p["beta"], p["kappa"])
     Y = fn(_sigma_points(m, P, c))
     mu = wm @ Y
     d = Y - mu
@@ -173,14 +185,17 @@ def theta_to_phi(X: np.ndarray) -> np.ndarray:
 class UKF:
     """Unscented Kalman filter on scaled phi with a random-walk model and scalar measurements."""
 
-    def __init__(self, theta0: np.ndarray, P0_theta: np.ndarray, params: UKFParams,
-                 alpha: float = 1.0, beta: float = 2.0, kappa: float = 0.0):
+    def __init__(self, *args, **kwargs):
+        spec = [("theta0", None), ("P0_theta", None), ("params", None),
+                ("alpha", 1.0), ("beta", 2.0), ("kappa", 0.0)]
+        p = _parse_named_args(args, kwargs, spec)
+        theta0, P0_theta, params = p["theta0"], p["P0_theta"], p["params"]
         m, P = unscented_transform(np.asarray(theta0, float), np.asarray(P0_theta, float), theta_to_phi)
         self.x = m / PHI_SCALE
         self.P = P / np.outer(PHI_SCALE, PHI_SCALE)
         self.q = params.q_per_mm / PHI_SCALE**2
         self.params = params
-        self.c, self.wm, self.wc = _weights(3, alpha, beta, kappa)
+        self.c, self.wm, self.wc = _weights(3, p["alpha"], p["beta"], p["kappa"])
 
     @property
     def phi(self) -> np.ndarray:
@@ -216,11 +231,12 @@ class UKF:
         self.P = 0.5 * (self.P + self.P.T)
         return nu, S
 
-    def step(self, y: float, x_mm: float, dx_mm: float, v_mm_s: float, ctx: StrokeContext,
-             r_var: float) -> tuple[float, float]:
+    def step(self, *args, **kwargs) -> tuple[float, float]:
         """One live update from a raw sample."""
-        self.predict(dx_mm)
-        return self.update(y, ctx.regressors(x_mm, v_mm_s), r_var)
+        spec = [("y", None), ("x_mm", None), ("dx_mm", None), ("v_mm_s", None), ("ctx", None), ("r_var", None)]
+        p = _parse_named_args(args, kwargs, spec)
+        self.predict(p["dx_mm"])
+        return self.update(p["y"], p["ctx"].regressors(p["x_mm"], p["v_mm_s"]), p["r_var"])
 
 
 # --------------------------------------------------------------------------- one stroke
@@ -301,10 +317,24 @@ class StrokeBlocks:
     r_var: float         # measurement variance per update
 
 
-def stroke_blocks(t_s: np.ndarray, x_mm: np.ndarray, p_cap_bar: np.ndarray, p_rod_bar: np.ndarray,
-                  ctx: StrokeContext, params: UKFParams, block: int = 1, x_start_mm: float | None = None,
-                  h_stop_mm: float = 0.0) -> StrokeBlocks:
+def stroke_blocks(*args, **kwargs) -> StrokeBlocks:
     """Force, position, speed and regressors per filter update, from ``x_start`` to ``h_stop``."""
+    spec = [
+        ("t_s", None),
+        ("x_mm", None),
+        ("p_cap_bar", None),
+        ("p_rod_bar", None),
+        ("ctx", None),
+        ("params", None),
+        ("block", 1),
+        ("x_start_mm", None),
+        ("h_stop_mm", 0.0),
+    ]
+    p = _parse_named_args(args, kwargs, spec)
+    t_s, x_mm = p["t_s"], p["x_mm"]
+    p_cap_bar, p_rod_bar = p["p_cap_bar"], p["p_rod_bar"]
+    ctx, params = p["ctx"], p["params"]
+    block, x_start_mm, h_stop_mm = p["block"], p["x_start_mm"], p["h_stop_mm"]
     force = pressures_to_force(p_cap_bar, p_rod_bar, ctx.press)
     x_start = START_FRACTION * ctx.L0_mm if x_start_mm is None else x_start_mm
     fs = 1.0 / float(np.median(np.diff(t_s)))
@@ -324,11 +354,7 @@ def stroke_blocks(t_s: np.ndarray, x_mm: np.ndarray, p_cap_bar: np.ndarray, p_ro
     return StrokeBlocks(xb, yb, v, ctx.regressors_many(xb, v), r_var)
 
 
-def run_stroke(t_s: np.ndarray, x_mm: np.ndarray, p_cap_bar: np.ndarray, p_rod_bar: np.ndarray,
-               ctx: StrokeContext, params: UKFParams | None = None, block: int = 1,
-               x_start_mm: float | None = None, h_stop_mm: float = 0.0,
-               prior: tuple[np.ndarray, np.ndarray] | None = None, theta_every: int = 1,
-               freeze_h_mm: float | None = None) -> UKFTrace:
+def run_stroke(*args, **kwargs) -> UKFTrace:
     """Run the filter causally over one stroke, from ``x_start`` until ``h`` reaches ``h_stop``.
 
     Ram speed at each update is the least-squares slope of position over the
@@ -341,7 +367,29 @@ def run_stroke(t_s: np.ndarray, x_mm: np.ndarray, p_cap_bar: np.ndarray, p_rod_b
     baseline, with S = H P H' + R. The onset detector uses this so the baseline
     parameters cannot absorb the end-of-stroke upturn they are meant to reveal.
     """
-    params = params or UKFParams.for_press(ctx.press)
+    spec = [
+        ("t_s", None),
+        ("x_mm", None),
+        ("p_cap_bar", None),
+        ("p_rod_bar", None),
+        ("ctx", None),
+        ("params", None),
+        ("block", 1),
+        ("x_start_mm", None),
+        ("h_stop_mm", 0.0),
+        ("prior", None),
+        ("theta_every", 1),
+        ("freeze_h_mm", None),
+    ]
+    p = _parse_named_args(args, kwargs, spec)
+    t_s, x_mm = p["t_s"], p["x_mm"]
+    p_cap_bar, p_rod_bar = p["p_cap_bar"], p["p_rod_bar"]
+    ctx = p["ctx"]
+    params = p["params"] or UKFParams.for_press(ctx.press)
+    block = p["block"]
+    x_start_mm, h_stop_mm = p["x_start_mm"], p["h_stop_mm"]
+    prior, theta_every, freeze_h_mm = p["prior"], p["theta_every"], p["freeze_h_mm"]
+
     sb = stroke_blocks(t_s, x_mm, p_cap_bar, p_rod_bar, ctx, params, block, x_start_mm, h_stop_mm)
     xb, yb, Hs, r_var = sb.xb, sb.yb, sb.H, sb.r_var
     n = len(xb)
@@ -369,8 +417,7 @@ def run_stroke(t_s: np.ndarray, x_mm: np.ndarray, p_cap_bar: np.ndarray, p_rod_b
     return UKFTrace(xb, ctx.L0_mm, th, sd, nu, S, yb, yp, block, f.phi, f.phi_cov, Hs, r_var)
 
 
-def tune_process_noise(strokes: list[tuple], params: UKFParams, block: int = 50,
-                       x_stop_frac: float = 0.85, maxiter: int = 300) -> tuple[UKFParams, float]:
+def tune_process_noise(strokes: list[tuple], params: UKFParams, *args, **kwargs) -> tuple[UKFParams, float]:
     """Maximum-likelihood process noise (per mm, on phi) and model noise from healthy strokes.
 
     ``strokes`` holds ``(t, x, p_cap, p_rod, ctx)`` tuples. The objective is the
@@ -379,6 +426,9 @@ def tune_process_noise(strokes: list[tuple], params: UKFParams, block: int = 50,
     baseline model is meant to hold. Returns the tuned params and the minimum NLL.
     """
     from scipy.optimize import minimize
+    block = args[0] if len(args) > 0 else kwargs.get("block", 50)
+    x_stop_frac = args[1] if len(args) > 1 else kwargs.get("x_stop_frac", 0.85)
+    maxiter = args[2] if len(args) > 2 else kwargs.get("maxiter", 300)
 
     def nll(logq: np.ndarray) -> float:
         p = UKFParams(np.exp(logq[:3]), params.force_noise_sd_N, float(np.exp(logq[3])), params.p0_sd)

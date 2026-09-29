@@ -16,6 +16,22 @@ from skinflow_discard_optimizer.aware.fault_id import (
 from skinflow_discard_optimizer.paths import REPO_ROOT
 
 
+HEALTHY_FEATS: dict[str, float] = {
+    "theta_F_tool_N": 5.85e5,
+    "theta_mu": 0.552,
+    "theta_sigma_scale": 1.008,
+    "billet_temp_C": 470.0,
+    "dT_K": 40.0,
+    "oil_temp_C": 45.0,
+    "supply_pressure_min_bar": 299.0,
+    "fpca_1": 44000.0,
+    "fpca_2": -18000.0,
+    "fpca_3": -2000.0,
+    "fpca_spe": 6e9,
+    "upturn_h_mm": 31.2,
+}
+
+
 @pytest.fixture
 def classifier() -> FaultClassifier:
     return FaultClassifier()
@@ -41,27 +57,11 @@ def test_classifier_signatures_structure(classifier: FaultClassifier):
     assert len(sigs.feature_cols) >= 10
     assert sigs.threshold_unknown > 0.0
     for c in sigs.classes:
-        assert c in sigs.means
-        assert c in sigs.variances
-        assert len(sigs.means[c]) == len(sigs.feature_cols)
+        assert c in sigs.means and c in sigs.variances and len(sigs.means[c]) == len(sigs.feature_cols)
 
 
 def test_classify_healthy_cycle(classifier: FaultClassifier):
-    healthy_feats = {
-        "theta_F_tool_N": 5.85e5,
-        "theta_mu": 0.552,
-        "theta_sigma_scale": 1.008,
-        "billet_temp_C": 470.0,
-        "dT_K": 40.0,
-        "oil_temp_C": 45.0,
-        "supply_pressure_min_bar": 299.0,
-        "fpca_1": 44000.0,
-        "fpca_2": -18000.0,
-        "fpca_3": -2000.0,
-        "fpca_spe": 6e9,
-        "upturn_h_mm": 31.2,
-    }
-    diag = classifier.classify(cycle=100, features=healthy_feats)
+    diag = classifier.classify(cycle=100, features=HEALTHY_FEATS)
     assert isinstance(diag, FaultDiagnosis)
     assert diag.cycle == 100
     assert diag.confidence > 0.50
@@ -70,7 +70,7 @@ def test_classify_healthy_cycle(classifier: FaultClassifier):
 
 
 @pytest.mark.parametrize(
-    ("scenario", "cycle", "expected_fault", "expected_keyword"),
+    "case",
     [
         ("die_wear", 9000, "die_wear", "die"),
         ("supply_pressure_sag", 8000, "supply_pressure_sag", "oil"),
@@ -78,13 +78,8 @@ def test_classify_healthy_cycle(classifier: FaultClassifier):
         ("sensor_gain_drift", 9000, "sensor_gain_drift", "transducer"),
     ],
 )
-def test_classify_known_fault_scenarios(
-    classifier: FaultClassifier,
-    scenario: str,
-    cycle: int,
-    expected_fault: str,
-    expected_keyword: str,
-):
+def test_classify_known_fault_scenarios(classifier: FaultClassifier, case: tuple):
+    scenario, cycle, expected_fault, expected_keyword = case
     df = pd.read_parquet(REPO_ROOT / "data" / "features" / f"{scenario}.parquet")
     feats: dict[str, Any] = df[df.cycle == cycle].iloc[0].to_dict()
     diag = classifier.classify(cycle=cycle, features=feats)
@@ -93,35 +88,27 @@ def test_classify_known_fault_scenarios(
 
 
 def test_classify_unknown_novel_anomaly(classifier: FaultClassifier):
-    unseen_feats = {
-        "theta_F_tool_N": 1.5e6,
-        "theta_mu": 0.95,
-        "theta_sigma_scale": 1.40,
-        "billet_temp_C": 350.0,
-        "dT_K": 80.0,
-        "oil_temp_C": 90.0,
-        "supply_pressure_min_bar": 150.0,
-        "fpca_1": 50.0,
-        "fpca_2": 50.0,
-        "fpca_3": 50.0,
-        "fpca_spe": 1e16,
-        "upturn_h_mm": 5.0,
-    }
+    unseen_feats = dict(
+        HEALTHY_FEATS,
+        theta_F_tool_N=1.5e6,
+        theta_mu=0.95,
+        theta_sigma_scale=1.40,
+        billet_temp_C=350.0,
+        dT_K=80.0,
+        oil_temp_C=90.0,
+        supply_pressure_min_bar=150.0,
+        fpca_1=50.0,
+        fpca_2=50.0,
+        fpca_3=50.0,
+        fpca_spe=1e16,
+        upturn_h_mm=5.0,
+    )
     diag = classifier.classify(cycle=9000, features=unseen_feats)
     _assert_diagnosis_fields(diag, "unknown", True, "does not match")
 
 
 def test_diagnosis_serialization(classifier: FaultClassifier):
-    healthy_feats = {
-        "theta_F_tool_N": 5.85e5,
-        "theta_mu": 0.552,
-        "theta_sigma_scale": 1.008,
-        "billet_temp_C": 470.0,
-        "dT_K": 40.0,
-        "oil_temp_C": 45.0,
-        "supply_pressure_min_bar": 299.0,
-    }
-    diag = classifier.classify(cycle=200, features=healthy_feats)
+    diag = classifier.classify(cycle=200, features=HEALTHY_FEATS)
     d = diag.as_dict()
     assert d["cycle"] == 200
     assert d["dominant_fault"] in ALL_FAULT_CLASSES

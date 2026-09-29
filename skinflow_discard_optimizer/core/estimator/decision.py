@@ -101,17 +101,47 @@ def chance_constrained_cut(m, s, st: DecisionSettings):
     return np.clip(np.asarray(m) + np.asarray(s) * norm.isf(st.chance_alpha), st.min_cut_mm, st.max_cut_mm)
 
 
-class AdaptiveConformal:
+def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, any]]) -> dict:
+    res = {}
+    for i, (k, default) in enumerate(spec):
+        if i < len(args):
+            res[k] = args[i]
+        else:
+            res[k] = kwargs.get(k, default)
+    return res
+
+
+class _BaseConformal:
+    def q(self) -> float:
+        raise NotImplementedError
+
+    def _get_alpha_goal(self) -> float:
+        raise NotImplementedError
+
+    def interval(self, m, s) -> tuple[np.ndarray, np.ndarray]:
+        q = self.q()
+        return np.asarray(m) - q * np.asarray(s), np.asarray(m) + q * np.asarray(s)
+
+    def scale_factor(self) -> float:
+        return float(self.q() / norm.isf(self._get_alpha_goal() / 2))
+
+
+class AdaptiveConformal(_BaseConformal):
     """Split-conformal interval on h_crit with adaptive conformal inference for drift."""
 
-    def __init__(self, calibration_scores: np.ndarray, target: float = 0.9, gamma: float = 0.01,
-                 window: int = 2000):
+    def __init__(self, calibration_scores: np.ndarray, *args, **kwargs):
+        target: float = args[0] if len(args) > 0 else kwargs.get("target", 0.9)
+        gamma: float = args[1] if len(args) > 1 else kwargs.get("gamma", 0.01)
+        window: int = args[2] if len(args) > 2 else kwargs.get("window", 2000)
         self.target = target
         self.alpha_goal = 1.0 - target
         self.alpha_t = self.alpha_goal
         self.gamma = gamma
         self.scores = deque(np.asarray(calibration_scores, float).tolist(), maxlen=window)
         self.history: list[tuple[float, int]] = []   # (alpha_t, miss) per audited label
+
+    def _get_alpha_goal(self) -> float:
+        return self.alpha_goal
 
     def q(self) -> float:
         """Conformal quantile at the current alpha_t (finite-sample corrected)."""
@@ -122,14 +152,6 @@ class AdaptiveConformal:
         if k >= n:
             return float(s[-1] * 1.5)                 # asked for more than the data can give: widen
         return float(s[max(k, 0)])
-
-    def interval(self, m, s) -> tuple[np.ndarray, np.ndarray]:
-        q = self.q()
-        return np.asarray(m) - q * np.asarray(s), np.asarray(m) + q * np.asarray(s)
-
-    def scale_factor(self) -> float:
-        """Calibrated / nominal sd ratio: q divided by the Gaussian quantile for the same coverage."""
-        return float(self.q() / norm.isf(self.alpha_goal / 2))
 
     def snapshot(self) -> "FrozenConformal":
         """The calibrator as it stands now. It does not change within one stroke, so one snapshot serves all its checkpoints."""
@@ -146,20 +168,17 @@ class AdaptiveConformal:
 
 
 @dataclass(frozen=True)
-class FrozenConformal:
+class FrozenConformal(_BaseConformal):
     """Read-only calibrator state with a cached quantile (same interface ``recommend`` uses)."""
 
     q_value: float
     alpha_goal: float
 
+    def _get_alpha_goal(self) -> float:
+        return self.alpha_goal
+
     def q(self) -> float:
         return self.q_value
-
-    def interval(self, m, s):
-        return np.asarray(m) - self.q_value * np.asarray(s), np.asarray(m) + self.q_value * np.asarray(s)
-
-    def scale_factor(self) -> float:
-        return float(self.q_value / norm.isf(self.alpha_goal / 2))
 
 
 @dataclass
@@ -176,27 +195,40 @@ class CutRecommendation:
     notes: list[str] = field(default_factory=list)
 
 
-def recommend(m: float, s: float, st: DecisionSettings, cal: "AdaptiveConformal | FrozenConformal | None",
-              onset_confidence: str = "none") -> CutRecommendation:
+def _eval_confidence(onset_confidence: str, width: float) -> str:
+    if onset_confidence == "high" and width < 6.0:
+        return "high"
+    if onset_confidence in ("high", "low") and width < 10.0:
+        return "medium"
+    return "low"
+
+
+def _compute_interval(m: float, s: float, cal, coverage_target: float) -> tuple[float, float, float]:
+    if cal is not None:
+        factor = cal.scale_factor()
+        lo, hi = (float(v) for v in cal.interval(m, s))
+    else:
+        factor = 1.0
+        z = float(norm.isf((1 - coverage_target) / 2))
+        lo, hi = float(m - z * s), float(m + z * s)
+    return factor, lo, hi
+
+
+def recommend(*args, **kwargs) -> CutRecommendation:
     """Turn a raw h_crit predictive into the published recommendation."""
-    factor = cal.scale_factor() if cal is not None else 1.0
+    spec = [("m", None), ("s", None), ("st", None), ("cal", None), ("onset_confidence", "none")]
+    p = _parse_named_args(args, kwargs, spec)
+    m, s, st, cal = p["m"], p["s"], p["st"], p["cal"]
+    onset_confidence = p["onset_confidence"]
+
+    factor, lo, hi = _compute_interval(m, s, cal, st.coverage_target)
     s_cal = s * max(factor, 1e-3)
     h = float(cost_optimal_cut(m, s_cal, st))
     h_cc = float(chance_constrained_cut(m, s_cal, st))
-    if cal is not None:
-        lo, hi = (float(v) for v in cal.interval(m, s))
-    else:
-        z = float(norm.isf((1 - st.coverage_target) / 2))
-        lo, hi = float(m - z * s), float(m + z * s)
+
     notes = []
     if h <= st.min_cut_mm + 1e-9 or h >= st.max_cut_mm - 1e-9:
         notes.append("cut at safety bound")
     onset_used = onset_confidence in ("high", "low")
-    width = hi - lo
-    if onset_confidence == "high" and width < 6.0:
-        conf = "high"
-    elif onset_confidence in ("high", "low") and width < 10.0:
-        conf = "medium"
-    else:
-        conf = "low"
+    conf = _eval_confidence(onset_confidence, hi - lo)
     return CutRecommendation(h, h_cc, float(m), float(s), float(s_cal), lo, hi, conf, onset_used, notes)

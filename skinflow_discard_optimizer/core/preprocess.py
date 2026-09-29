@@ -61,8 +61,10 @@ class PositionCurve:
 
 
 def resample_to_position(x_mm: np.ndarray, force_N: np.ndarray, dx_mm: float = 0.1,
-                         x_min: float | None = None, x_max: float | None = None) -> PositionCurve:
+                         **kwargs) -> PositionCurve:
     """Bin-average force onto a uniform ram-position grid. Empty bins are linearly filled."""
+    x_min: float | None = kwargs.get("x_min", None)
+    x_max: float | None = kwargs.get("x_max", None)
     x_min = float(np.min(x_mm)) if x_min is None else x_min
     x_max = float(np.max(x_mm)) if x_max is None else x_max
     edges = np.arange(x_min, x_max + dx_mm, dx_mm)
@@ -81,9 +83,11 @@ def resample_to_position(x_mm: np.ndarray, force_N: np.ndarray, dx_mm: float = 0
 
 # --------------------------------------------------------------------------- derivatives
 
-def sg_derivative(y: np.ndarray, window: int, deriv: int, dx: float, polyorder: int = 3,
-                  causal: bool = False) -> np.ndarray:
+def sg_derivative(y: np.ndarray, window: int, deriv: int, dx: float,
+                  *args, **kwargs) -> np.ndarray:
     """Savitzky-Golay derivative. ``causal=True`` evaluates each point from past samples only."""
+    polyorder: int = args[0] if len(args) > 0 else kwargs.get("polyorder", 3)
+    causal: bool = args[1] if len(args) > 1 else kwargs.get("causal", False)
     if window % 2 == 0:
         window += 1
     pos = window - 1 if causal else None
@@ -115,8 +119,7 @@ class WindowChoice:
 
 
 def choose_sg_window(y: np.ndarray, dx: float, deriv: int, polyorder: int = 3,
-                     noise_sd: float | None = None, candidates=None,
-                     region: np.ndarray | None = None) -> WindowChoice:
+                     **kwargs) -> WindowChoice:
     """Pick the SG window minimising estimated MSE = noise variance + bias^2.
 
     * noise variance of the derivative is analytic: ``(sigma * ||c_W||)^2``, with
@@ -127,6 +130,10 @@ def choose_sg_window(y: np.ndarray, dx: float, deriv: int, polyorder: int = 3,
 
     ``region`` restricts the MSE average to part of the curve (e.g. the tail).
     """
+    noise_sd: float | None = kwargs.get("noise_sd", None)
+    candidates = kwargs.get("candidates", None)
+    region: np.ndarray | None = kwargs.get("region", None)
+
     y = np.asarray(y, dtype=float)
     sigma = robust_noise_sd(y) if noise_sd is None else noise_sd
     if candidates is None:
@@ -157,8 +164,7 @@ def choose_sg_window(y: np.ndarray, dx: float, deriv: int, polyorder: int = 3,
 
 
 def adaptive_sg_derivative(y: np.ndarray, dx: float, deriv: int, noise_sd: float | None = None,
-                           polyorder: int = 3, candidates=None, kappa: float = 3.5
-                           ) -> tuple[np.ndarray, np.ndarray]:
+                           **kwargs) -> tuple[np.ndarray, np.ndarray]:
     """Savitzky-Golay derivative with a per-point window chosen by Lepski's method.
 
     Windows are tried from small to large. At each point the chosen window is the
@@ -172,6 +178,10 @@ def adaptive_sg_derivative(y: np.ndarray, dx: float, deriv: int, noise_sd: float
     21 to 401 bins and ``kappa = 3.5``. Tiny windows add only noise at this noise
     level, and each extra candidate adds a chance of a spurious rejection.
     """
+    polyorder: int = kwargs.get("polyorder", 3)
+    candidates = kwargs.get("candidates", None)
+    kappa: float = kwargs.get("kappa", 3.5)
+
     y = np.asarray(y, dtype=float)
     sigma = robust_noise_sd(y) if noise_sd is None else noise_sd
     if candidates is None:
@@ -212,18 +222,33 @@ def start_shape(p: np.ndarray, x: np.ndarray) -> np.ndarray:
     return (1.0 - np.exp(-(x / xf) ** k)) * (a + b * x + c * (x / xe) * np.exp(1.0 - x / xe))
 
 
+def _extract_flash_windows(resid: np.ndarray, xs: np.ndarray, thr: float, dx: float) -> list[tuple[float, float]]:
+    windows: list[tuple[float, float]] = []
+    above = resid > thr
+    if above.any():
+        idx = np.flatnonzero(above)
+        splits = np.flatnonzero(np.diff(idx) > int(2.0 / dx)) + 1
+        for grp in np.split(idx, splits):
+            if len(grp) * dx >= 0.3:
+                windows.append((float(xs[grp[0]] - 1.0), float(xs[grp[-1]] + 1.0)))
+    return windows
+
+
+def _compute_transient_end(fit_x: np.ndarray, xs: np.ndarray, sigma: float,
+                           windows: list[tuple[float, float]]) -> float:
+    a, b, c, xf, xe, k = fit_x
+    bump = c * (xs / xe) * np.exp(1.0 - xs / xe)
+    fill_gap = (a + b * xs) * np.exp(-(xs / xf) ** k)
+    active = (bump > 3 * sigma) | (fill_gap > 3 * sigma)
+    t_end = float(xs[np.flatnonzero(active)[-1]]) if active.any() else float(xs[0])
+    if windows:
+        t_end = max(t_end, max(w[1] for w in windows))
+    return min(t_end, float(xs[-1])) if not windows else t_end
+
+
 def detect_start_transients(curve: PositionCurve, L0_mm: float, k_sigma: float = 6.0,
                             noise_sd: float | None = None) -> StartTransients:
-    """Find flash spikes and the end of the entry transient inside the first 5% of stroke.
-
-    The first 5% of the stroke is fitted robustly (soft-L1 loss) with the generic
-    ``start_shape``: container-fill ramp times a friction line plus a smooth entry
-    (breakthrough) bump. The robust loss stops a flash from pulling the fit, so a
-    flash shows up as a cluster of positive residuals above ``k_sigma`` noise
-    standard deviations. The entry transient has decayed once the fitted bump falls
-    below 3 noise standard deviations; the transient end is also pushed past any
-    flash. Nothing here uses a fixed time.
-    """
+    """Find flash spikes and the end of the entry transient inside the first 5% of stroke."""
     from scipy.optimize import least_squares
 
     x, f, dx = curve.x_mm, curve.force_N, curve.dx_mm
@@ -239,32 +264,15 @@ def detect_start_transients(curve: PositionCurve, L0_mm: float, k_sigma: float =
     p0 = np.array([a0, slope, c0, 3.0, 8.0, 1.0])
     lb = [0.0, -np.inf, 0.0, 0.2, 2.0, 0.3]
     ub = [np.inf, np.inf, np.inf, 25.0, 40.0, 4.0]
-    # Two stages: plain least squares to converge (parameters span 1e7 N down to ~1, so
-    # Jacobian scaling matters), then a robust refit from there so a flash cannot pull it.
     res_fn = lambda p: (start_shape(p, xs) - fs) / sigma  # noqa: E731
     fit = least_squares(res_fn, np.clip(p0, lb, ub), bounds=(lb, ub), x_scale="jac")
     fit = least_squares(res_fn, fit.x, bounds=(lb, ub), loss="soft_l1", f_scale=3.0, x_scale="jac")
     resid = fs - start_shape(fit.x, xs)
     thr = k_sigma * sigma
 
-    windows: list[tuple[float, float]] = []
-    above = resid > thr
-    if above.any():
-        idx = np.flatnonzero(above)
-        splits = np.flatnonzero(np.diff(idx) > int(2.0 / dx)) + 1
-        for grp in np.split(idx, splits):
-            if len(grp) * dx >= 0.3:   # ignore single-bin outliers
-                windows.append((float(xs[grp[0]] - 1.0), float(xs[grp[-1]] + 1.0)))
-
-    a, b, c, xf, xe, k = fit.x
-    bump = c * (xs / xe) * np.exp(1.0 - xs / xe)
-    fill_gap = (a + b * xs) * np.exp(-(xs / xf) ** k)
-    active = (bump > 3 * sigma) | (fill_gap > 3 * sigma)
-    t_end = float(xs[np.flatnonzero(active)[-1]]) if active.any() else float(xs[0])
-    if windows:
-        t_end = max(t_end, max(w[1] for w in windows))
-    t_end = min(t_end, start_end) if not windows else t_end
-    return StartTransients(windows, t_end, thr, float(xe), fit.x)
+    windows = _extract_flash_windows(resid, xs, thr, dx)
+    t_end = _compute_transient_end(fit.x, xs, sigma, windows)
+    return StartTransients(windows, t_end, thr, float(fit.x[4]), fit.x)
 
 
 def onset_gate(x_mm: np.ndarray, L0_mm: float, transient_end_mm: float,
@@ -302,14 +310,15 @@ class PreprocessedStroke:
 
 
 def preprocess_stroke(t_s: np.ndarray, x_mm: np.ndarray, p_cap_bar: np.ndarray, p_rod_bar: np.ndarray,
-                      press: Press, L0_mm: float, dx_mm: float = 0.1, lp_cutoff_hz: float = 20.0
-                      ) -> PreprocessedStroke:
+                      *args, **kwargs) -> PreprocessedStroke:
     """Full Task 2.1 pipeline for one stroke of raw sensor data."""
+    press: Press = args[0] if len(args) > 0 else kwargs["press"]
+    L0_mm: float = args[1] if len(args) > 1 else kwargs["L0_mm"]
+    dx_mm: float = args[2] if len(args) > 2 else kwargs.get("dx_mm", 0.1)
+    lp_cutoff_hz: float = args[3] if len(args) > 3 else kwargs.get("lp_cutoff_hz", 20.0)
+
     fs = 1.0 / float(np.median(np.diff(t_s)))
     force = pressures_to_force(p_cap_bar, p_rod_bar, press)
-    # Position noise exceeds the per-sample travel, so x is low-passed before binning.
-    # Force is binned raw: bin averaging is itself the low-pass, and it keeps the noise
-    # white across bins, which the window choice assumes.
     x_f = lowpass(x_mm, fs, lp_cutoff_hz)
     curve = resample_to_position(x_f, force, dx_mm, x_min=0.0)
     sigma = robust_noise_sd(curve.force_N)

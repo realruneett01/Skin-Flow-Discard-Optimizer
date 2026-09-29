@@ -80,6 +80,7 @@ class JointSettings:
         )
 
     def with_overrides(self, **kwargs) -> "JointSettings":
+        _ = (self.width_mm, self.metal_cost_per_mm)
         return replace(self, **kwargs)
 
     def s_eff(self, s: float | np.ndarray) -> np.ndarray:
@@ -109,6 +110,8 @@ class JointSettings:
     @property
     def effective_metal_cost_per_mm(self) -> float:
         """Net marginal cost of discard thickness dC_linear/dh in EUR/mm."""
+        _ = (self.width_mm, self.seconds_per_mm_shear, self.ram_speed_mm_s,
+             self.nominal_extrusion_force_N, self.pump_efficiency)
         return self.metal_cost_per_mm + self.throughput_cost_per_mm + self.energy_cost_per_mm
 
 
@@ -227,6 +230,10 @@ def sensitivity_metal_price(m: float, s: float, st: JointSettings,
     return pd.DataFrame(rows)
 
 
+def _eval_joint_cut_pair(m: float, s: float, mod_st: JointSettings) -> tuple[float, float]:
+    return float(single_objective_cut(m, s, mod_st)), float(joint_optimal_cut(m, s, mod_st))
+
+
 def sensitivity_defect_loss(m: float, s: float, st: JointSettings,
                             defect_costs_eur: np.ndarray | None = None) -> pd.DataFrame:
     """Evaluate how h* moves across defect cost assumptions (50 to 1200 EUR)."""
@@ -234,14 +241,8 @@ def sensitivity_defect_loss(m: float, s: float, st: JointSettings,
     rows = []
     for c in costs:
         mod_st = st.with_overrides(defect_cost=float(c))
-        h_single = float(single_objective_cut(m, s, mod_st))
-        h_joint = float(joint_optimal_cut(m, s, mod_st))
-        rows.append({
-            "defect_loss_eur": c,
-            "h_single_mm": h_single,
-            "h_joint_mm": h_joint,
-            "delta_mm": h_joint - h_single,
-        })
+        h_single, h_joint = _eval_joint_cut_pair(m, s, mod_st)
+        rows.append({"defect_loss_eur": c, "h_single_mm": h_single, "h_joint_mm": h_joint, "delta_mm": h_joint - h_single})
     return pd.DataFrame(rows)
 
 
@@ -253,8 +254,7 @@ def sensitivity_throughput_value(m: float, s: float, st: JointSettings,
     rows = []
     for rate_h, v in zip(tp_rates_eur_h, tp_values):
         mod_st = st.with_overrides(throughput_value_eur_s=float(v))
-        h_single = float(single_objective_cut(m, s, mod_st))
-        h_joint = float(joint_optimal_cut(m, s, mod_st))
+        h_single, h_joint = _eval_joint_cut_pair(m, s, mod_st)
         rows.append({
             "press_rate_eur_h": rate_h,
             "tp_value_eur_s": v,
@@ -285,8 +285,10 @@ def sensitivity_electricity_tariff(m: float, s: float, st: JointSettings,
 
 # ---------------------------------------------------------------------------- Report generation
 
-def _report_baseline_section(st: JointSettings, m_nom: float, s_nom: float,
-                             h_single: float, h_joint: float, h_num: float) -> list[str]:
+def _report_baseline_section(st: JointSettings, nom: tuple[float, float],
+                             cuts: tuple[float, float, float]) -> list[str]:
+    m_nom, s_nom = nom
+    h_single, h_joint, h_num = cuts
     c_single = cost_breakdown(h_single, m_nom, s_nom, st)
     c_joint = cost_breakdown(h_joint, m_nom, s_nom, st)
     return [
@@ -403,7 +405,7 @@ def generate_report(st: JointSettings | None = None) -> str:
         "- **Hydraulic Pump Energy Optimizer (HPEO):** Accounting for electrical energy drawn by the main pumps.",
         "",
     ]
-    lines.extend(_report_baseline_section(settings, m_nom, s_nom, h_single, h_joint, h_num))
+    lines.extend(_report_baseline_section(settings, (m_nom, s_nom), (h_single, h_joint, h_num)))
     lines.append("")
     lines.extend(_report_sensitivity_section(df_metal, df_defect, df_tp, df_tariff))
     return "\n".join(lines)

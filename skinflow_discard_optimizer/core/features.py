@@ -98,8 +98,8 @@ class ThetaFit:
     resid_rms_N: float
 
 
-def fit_theta(x_mm: np.ndarray, force_N: np.ndarray, L0_mm: float, R: float, v_mm_s: float,
-              T_front_C: float, alloy: Alloy, press: Press) -> ThetaFit:
+def fit_theta(x_mm: np.ndarray, force_N: np.ndarray, L0_mm: float, R: float,
+              *args, **kwargs) -> ThetaFit:
     """Least-squares fit of the plan's baseline force model (no upturn term).
 
     With flow stress fixed by the measured temperature and speed, the model
@@ -108,6 +108,11 @@ def fit_theta(x_mm: np.ndarray, force_N: np.ndarray, L0_mm: float, R: float, v_m
     the measured front temperature with the nominal taper and heating from
     config/press.yaml, since those are not measured per billet.
     """
+    v_mm_s: float = args[0] if len(args) > 0 else kwargs["v_mm_s"]
+    T_front_C: float = args[1] if len(args) > 1 else kwargs["T_front_C"]
+    alloy: Alloy = args[2] if len(args) > 2 else kwargs["alloy"]
+    press: Press = args[3] if len(args) > 3 else kwargs["press"]
+
     Db = press.container_bore_mm
     Ac = press.container_area_mm2
     T = (T_front_C - press.taper_K * x_mm / L0_mm
@@ -120,23 +125,44 @@ def fit_theta(x_mm: np.ndarray, force_N: np.ndarray, L0_mm: float, R: float, v_m
     return ThetaFit(float(s), float(smu / s) if s != 0 else float("nan"), float(ft), float(np.sqrt(np.mean(resid**2))))
 
 
+def _find_upturn_run(out: np.ndarray, h: np.ndarray, run_mm: float, n: int) -> int | None:
+    end = len(out) - 1 - n // 2
+    if end < 1 or not out[end]:
+        return None
+    i = end
+    while i > 0 and out[i - 1]:
+        i -= 1
+    if (h[i] - h[end]) < run_mm:
+        return None
+    return i
+
+
+def _fit_exponential_decay(h_run: np.ndarray, r_run: np.ndarray, sd: float, ref_amplitude_N: float) -> tuple[float, float]:
+    pos = r_run > 2 * sd
+    if pos.sum() < 5:
+        return float("nan"), float("nan")
+    hh, rr = h_run[pos], r_run[pos]
+    slope, icpt = np.polyfit(hh, np.log(rr), 1, w=np.sqrt(rr))
+    if slope >= 0:
+        return float("nan"), float("nan")
+    lam = -1.0 / slope
+    return float(lam * (icpt - np.log(ref_amplitude_N))), float(lam)
+
+
 def upturn_location(x_mm: np.ndarray, force_N: np.ndarray, L0_mm: float, h_stop_mm: float,
-                    ref_amplitude_N: float, k_sigma: float = 5.0, dx_mm: float = 0.5,
-                    run_mm: float = 3.0) -> tuple[float, float]:
+                    *args, **kwargs) -> tuple[float, float]:
     """End-of-stroke onset thickness and decay length, or ``(nan, nan)`` if none is seen.
 
     ``F_up = a*exp(-h/lam)`` has no sharp start, so "where it leaves the noise"
     would depend on the noise level. The onset is therefore *defined* as the
     thickness where the upturn reaches ``ref_amplitude_N`` (the same convention the
     simulator uses), which makes it comparable across presses and noise levels.
-
-    1. Fit a line to force over ``h in [60, 110] mm`` and take the residual.
-    2. Detect: the final run of smoothed residuals beyond ``k_sigma`` noise standard
-       deviations must last ``run_mm`` and reach ``h_stop_mm``.
-    3. Fit ``log r = log a - h/lam`` on the detected positive run and solve
-       ``a*exp(-h/lam) = ref_amplitude_N`` for h. A negative run (the source spec's
-       "drop" shape) reports the start of the run instead.
     """
+    ref_amplitude_N: float = args[0] if len(args) > 0 else kwargs["ref_amplitude_N"]
+    k_sigma: float = args[1] if len(args) > 1 else kwargs.get("k_sigma", 5.0)
+    dx_mm: float = args[2] if len(args) > 2 else kwargs.get("dx_mm", 0.5)
+    run_mm: float = args[3] if len(args) > 3 else kwargs.get("run_mm", 3.0)
+
     keep = (L0_mm - x_mm) >= h_stop_mm
     c = resample_to_position(x_mm[keep], force_N[keep], dx_mm, x_min=max(L0_mm - 130.0, 0.0))
     h = L0_mm - c.x_mm
@@ -150,27 +176,14 @@ def upturn_location(x_mm: np.ndarray, force_N: np.ndarray, L0_mm: float, h_stop_
     rs = np.convolve(r, np.ones(n) / n, mode="same")
     thr = k_sigma * sd / np.sqrt(n)
     out = (np.abs(rs) > thr) & (h < 60)
-    # "same" convolution is biased over the last n//2 bins; judge the run end before them
-    end = len(out) - 1 - n // 2
-    if end < 1 or not out[end]:
-        return float("nan"), float("nan")
-    i = end
-    while i > 0 and out[i - 1]:
-        i -= 1
-    if (h[i] - h[end]) < run_mm:
+
+    i = _find_upturn_run(out, h, run_mm, n)
+    if i is None:
         return float("nan"), float("nan")
     run = slice(i, len(out))
     if np.median(r[run]) < 0:
         return float(h[i]), float("nan")
-    pos = r[run] > 2 * sd
-    if pos.sum() < 5:
-        return float("nan"), float("nan")
-    hh, rr = h[run][pos], r[run][pos]
-    slope, icpt = np.polyfit(hh, np.log(rr), 1, w=np.sqrt(rr))  # weight: log of small r is noisy
-    if slope >= 0:
-        return float("nan"), float("nan")
-    lam = -1.0 / slope
-    return float(lam * (icpt - np.log(ref_amplitude_N))), float(lam)
+    return _fit_exponential_decay(h[run], r[run], sd, ref_amplitude_N)
 
 
 class FeatureExtractor:

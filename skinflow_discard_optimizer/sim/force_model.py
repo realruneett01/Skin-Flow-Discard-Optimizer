@@ -218,8 +218,30 @@ def billet_temperature_K(x_mm, spec: StrokeSpec):
 
 # --------------------------------------------------------------------------- L2: force curve
 
-def base_force_N(x_mm, sigma_MPa, spec_or_L0, Db_mm: float, R: float, mu, sigma_scale=1.0):
+def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, any]]) -> dict:
+    res = {}
+    for i, (k, default) in enumerate(spec):
+        if i < len(args):
+            res[k] = args[i]
+        else:
+            res[k] = kwargs.get(k, default)
+    return res
+
+
+def base_force_N(*args, **kwargs):
     """Reduction + container-friction force (plan formula without F_tool and F_up)."""
+    spec_list = [
+        ("x_mm", None),
+        ("sigma_MPa", None),
+        ("spec_or_L0", None),
+        ("Db_mm", None),
+        ("R", None),
+        ("mu", None),
+        ("sigma_scale", 1.0),
+    ]
+    p = _parse_named_args(args, kwargs, spec_list)
+    x_mm, sigma_MPa, spec_or_L0 = p["x_mm"], p["sigma_MPa"], p["spec_or_L0"]
+    Db_mm, R, mu, sigma_scale = p["Db_mm"], p["R"], p["mu"], p["sigma_scale"]
     L0 = spec_or_L0.L0_mm if isinstance(spec_or_L0, StrokeSpec) else float(spec_or_L0)
     Ac = np.pi / 4.0 * Db_mm**2
     return Ac * sigma_scale * sigma_MPa * (np.log(R) + 4.0 * mu * (L0 - np.asarray(x_mm)) / Db_mm)
@@ -263,6 +285,12 @@ class ForceBreakdown:
         self.total_N = self.fill * (self.base_N + self.tool_N + self.entry_N) + self.end_N
 
 
+def _eval_steady_base_force(x_pos: float, spec: StrokeSpec, Db: float, R: float) -> float:
+    eps = feltham_strain_rate(spec.ram_speed_mm_s, Db, R)
+    sig = flow_stress_MPa(eps, billet_temperature_K(x_pos, spec), spec.alloy)
+    return float(base_force_N(x_pos, sig, spec, Db, R, spec.mu, spec.sigma_scale))
+
+
 def force_breakdown(x_mm, spec: StrokeSpec, press: Press, v_ram_mm_s=None) -> ForceBreakdown:
     """Evaluate every force term along the stroke. ``v_ram_mm_s`` defaults to the steady speed."""
     x = np.asarray(x_mm, dtype=float)
@@ -276,9 +304,7 @@ def force_breakdown(x_mm, spec: StrokeSpec, press: Press, v_ram_mm_s=None) -> Fo
     tool = np.full_like(x, spec.F_tool_N)
 
     # Breakthrough bump scaled on the steady-state force at the start of the stroke.
-    sigma0 = flow_stress_MPa(feltham_strain_rate(spec.ram_speed_mm_s, Db, R),
-                             billet_temperature_K(0.0, spec), spec.alloy)
-    f0 = float(base_force_N(0.0, sigma0, spec, Db, R, spec.mu, spec.sigma_scale))
+    f0 = _eval_steady_base_force(0.0, spec, Db, R)
     xe = spec.entry_length_mm
     entry = spec.entry_amplitude_frac * f0 * (x / xe) * np.exp(1.0 - x / xe)
     fill = 1.0 - np.exp(-np.clip(x, 0.0, None) / spec.fill_length_mm)
@@ -286,9 +312,7 @@ def force_breakdown(x_mm, spec: StrokeSpec, press: Press, v_ram_mm_s=None) -> Fo
     base_on = None
     if spec.shape == "drop":
         x_on = spec.L0_mm - spec.h_onset_mm
-        s_on = flow_stress_MPa(feltham_strain_rate(spec.ram_speed_mm_s, Db, R),
-                               billet_temperature_K(x_on, spec), spec.alloy)
-        base_on = float(base_force_N(x_on, s_on, spec, Db, R, spec.mu, spec.sigma_scale))
+        base_on = _eval_steady_base_force(x_on, spec, Db, R)
     end = end_of_stroke_force_N(h, spec, base_on)
     return ForceBreakdown(x, h, T, np.asarray(eps), sigma, base, tool, entry, fill, end)
 
@@ -354,11 +378,7 @@ def ram_kinematics(spec: StrokeSpec, fs_hz: float):
     return t, x, v * (1.0 - decay[keep])
 
 
-def simulate_stroke(spec: StrokeSpec, press: Press, rng: np.random.Generator | None = None,
-                    fs_hz: float | None = None, noise: bool = True, *,
-                    extra_force_N: Callable[[np.ndarray], np.ndarray] | None = None,
-                    cap_gain: float = 1.0, cap_bias_bar: float = 0.0,
-                    encoder_offset_mm: float = 0.0) -> StrokeData:
+def simulate_stroke(*args, **kwargs) -> StrokeData:
     """Simulate cap/rod pressure and position at the sensor rate for one stroke.
 
     ``extra_force_N(x)`` adds a physical force term (e.g. a flash spike). ``cap_gain``,
@@ -367,6 +387,23 @@ def simulate_stroke(spec: StrokeSpec, press: Press, rng: np.random.Generator | N
     The press cannot push harder than its supply pressure allows. If the end-of-stroke
     upturn demands more, the ram stalls and the stroke ends there (``stall_limit_N``).
     """
+    spec_list = [
+        ("spec", None),
+        ("press", None),
+        ("rng", None),
+        ("fs_hz", None),
+        ("noise", True),
+        ("extra_force_N", None),
+        ("cap_gain", 1.0),
+        ("cap_bias_bar", 0.0),
+        ("encoder_offset_mm", 0.0),
+    ]
+    p = _parse_named_args(args, kwargs, spec_list)
+    spec, press = p["spec"], p["press"]
+    rng, fs_hz, noise = p["rng"], p["fs_hz"], p["noise"]
+    extra_force_N = p["extra_force_N"]
+    cap_gain, cap_bias_bar, encoder_offset_mm = p["cap_gain"], p["cap_bias_bar"], p["encoder_offset_mm"]
+
     fs = fs_hz or press.sample_rate_hz
     rng = rng if rng is not None else np.random.default_rng()
     t, x, v = ram_kinematics(spec, fs)

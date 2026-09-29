@@ -40,26 +40,36 @@ def _is_bare_number(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _check_leaf_provenance(tree: dict, prefix: str) -> list[str]:
+    issues = []
+    if tree.get("status") not in STATUSES:
+        issues.append(f"{prefix}: status must be one of {STATUSES}, got {tree.get('status')!r}")
+    src = tree.get("SOURCE")
+    if not isinstance(src, str) or not src.strip():
+        issues.append(f"{prefix}: missing SOURCE")
+    return issues
+
+
+def _check_dict_node(tree: dict, prefix: str) -> list[str]:
+    issues = []
+    for k, v in tree.items():
+        key = f"{prefix}.{k}" if prefix else str(k)
+        if _is_bare_number(v):
+            issues.append(f"{key}: bare number {v!r} without status/SOURCE")
+        elif isinstance(v, list) and any(_is_bare_number(x) for x in v):
+            issues.append(f"{key}: list of bare numbers without status/SOURCE")
+        else:
+            issues.extend(provenance_issues(v, key))
+    return issues
+
+
 def provenance_issues(tree: Any, prefix: str = "") -> list[str]:
     """List every leaf without valid provenance, and every bare number outside a leaf."""
-    issues = []
     if _is_leaf(tree):
-        if tree.get("status") not in STATUSES:
-            issues.append(f"{prefix}: status must be one of {STATUSES}, got {tree.get('status')!r}")
-        src = tree.get("SOURCE")
-        if not isinstance(src, str) or not src.strip():
-            issues.append(f"{prefix}: missing SOURCE")
-        return issues
+        return _check_leaf_provenance(tree, prefix)
     if isinstance(tree, dict):
-        for k, v in tree.items():
-            key = f"{prefix}.{k}" if prefix else str(k)
-            if _is_bare_number(v):
-                issues.append(f"{key}: bare number {v!r} without status/SOURCE")
-            elif isinstance(v, list) and any(_is_bare_number(x) for x in v):
-                issues.append(f"{key}: list of bare numbers without status/SOURCE")
-            else:
-                issues.extend(provenance_issues(v, key))
-    return issues
+        return _check_dict_node(tree, prefix)
+    return []
 
 
 def load_yaml(path: Path, *, enforce_provenance: bool = True) -> dict:

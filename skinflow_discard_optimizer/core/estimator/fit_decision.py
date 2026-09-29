@@ -42,6 +42,16 @@ _engine: CutEngine | None = None
 
 # ---------------------------------------------------------------------------- workers
 
+def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, any]]) -> dict:
+    res = {}
+    for i, (k, default) in enumerate(spec):
+        if i < len(args):
+            res[k] = args[i]
+        else:
+            res[k] = kwargs.get(k, default)
+    return res
+
+
 def _init(with_models: bool) -> None:
     global _engine
     if with_models:
@@ -130,7 +140,9 @@ def stream_loop(rows: list[dict], cal_scores: np.ndarray, st: DecisionSettings, 
     return out
 
 
-def _pool_map(fn, rows, with_models: bool, workers: int | None = None, chunksize: int = 8) -> list:
+def _pool_map(fn, rows, with_models: bool = False, **kwargs) -> list:
+    workers = kwargs.get("workers", None)
+    chunksize = kwargs.get("chunksize", 8)
     with ProcessPoolExecutor(max_workers=workers or default_workers(), initializer=_init,
                              initargs=(with_models,)) as ex:
         return list(ex.map(fn, rows, chunksize=chunksize))
@@ -217,8 +229,7 @@ def evaluate_streams(rows: pd.DataFrame, cal_scores: np.ndarray, model: DefectMo
     return ev
 
 
-def report(ev: pd.DataFrame, prior: HierarchicalModel, onset: HierarchicalModel, st: DecisionSettings,
-           model: DefectModel, n_train: int, n_cal: int) -> str:
+def _summarize_scenario_metrics(ev: pd.DataFrame, model: DefectModel) -> pd.DataFrame:
     mass_per_mm = float(model.discard_mass_kg(1.0))
     billet = model.econ.billet_mass_kg
     rows = []
@@ -235,15 +246,60 @@ def report(ev: pd.DataFrame, prior: HierarchicalModel, onset: HierarchicalModel,
             "oracle saving EUR/billet": (g.static_cost - g.oracle_cost).mean(),
             "late %": 100 * g.late.mean(),
         })
-    t = pd.DataFrame(rows)
+    return pd.DataFrame(rows)
+
+
+def _format_model_sections(prior: HierarchicalModel, onset: HierarchicalModel, ev: pd.DataFrame) -> list[str]:
+    coef = lambda mdl: "\n".join(f"| {n} | {m:.4g} | {s:.2g} |" for n, m, s in mdl.coef_table())  # noqa: E731
+    return [
+        "## Models",
+        "",
+        f"Pre-onset model (state features only): residual sd {prior.diagnostics['sigma_mm']:.2f} mm.",
+        "",
+        "| term | posterior mean (per unit) | sd |", "|---|---|---|", coef(prior),
+        "",
+        f"Onset model (target: the gap `h_crit - onset`, so the onset enters with coefficient 1; assumption A-27): "
+        f"residual sd {onset.diagnostics['sigma_mm']:.2f} mm.",
+        "",
+        "| term | posterior mean (per unit) | sd |", "|---|---|---|", coef(onset),
+        "",
+        f"Gibbs diagnostics (naive Geweke z, |z|<2 suggests convergence): prior sigma {prior.diagnostics['geweke_z_sigma']:.2f}, "
+        f"onset sigma {onset.diagnostics['geweke_z_sigma']:.2f}.",
+        "",
+        "Die random effects (onset model, posterior mean mm): "
+        + ", ".join(f"{lv} {onset.effects['die_id'][:, i].mean() * onset.y_sd:+.2f}"
+                    for i, lv in enumerate(onset.levels["die_id"])),
+        "",
+        f"Decision latency (engine compute per cycle, offline Python): median {ev.compute_ms.median():.0f} ms, "
+        f"p99 {ev.compute_ms.quantile(0.99):.0f} ms. This covers the whole stroke replay; the live service only "
+        "does one incremental update per sample (Task 6.1 measures that).",
+    ]
+
+
+def report(*args, **kwargs) -> str:
+    spec_list = [
+        ("ev", None),
+        ("prior", None),
+        ("onset", None),
+        ("st", None),
+        ("model", None),
+        ("n_train", None),
+        ("n_cal", None),
+    ]
+    p = _parse_named_args(args, kwargs, spec_list)
+    ev, prior, onset = p["ev"], p["prior"], p["onset"]
+    st, model, n_train, n_cal = p["st"], p["model"], p["n_train"], p["n_cal"]
+
+    t = _summarize_scenario_metrics(ev, model)
     target = 100 * st.coverage_target
     held = ev.scenario.isin(HELD_OUT_SCENARIOS)
     drift = ev.scenario.isin(["die_wear", "liner_scale", "temperature_drift", "supply_pressure_sag",
                               "sensor_gain_drift", "combined_wear_and_scale"])
-    cov_all, cov_held, cov_drift = 100 * ev.covered.mean(), 100 * ev[held].covered.mean(), 100 * ev[drift].covered.mean()
+    cov_all = 100 * ev.covered.mean()
+    cov_held = 100 * ev[held].covered.mean()
+    cov_drift = 100 * ev[drift].covered.mean()
     worst = t["coverage %"].sub(target).abs().max()
     ok = all(abs(c - target) <= 2 for c in (cov_all, cov_held, cov_drift))
-    coef = lambda mdl: "\n".join(f"| {n} | {m:.4g} | {s:.2g} |" for n, m, s in mdl.coef_table())  # noqa: E731
     lines = [
         "# Task 3.3: critical-thickness posterior and cost-optimal cut",
         "",
@@ -267,27 +323,7 @@ def report(ev: pd.DataFrame, prior: HierarchicalModel, onset: HierarchicalModel,
         "ceiling if `h_crit` were known exactly. 'late' means the recommendation arrived after the ram had passed "
         "it and the cut landed where the ram could stop.",
         "",
-        "## Models",
-        "",
-        f"Pre-onset model (state features only): residual sd {prior.diagnostics['sigma_mm']:.2f} mm.",
-        "",
-        "| term | posterior mean (per unit) | sd |", "|---|---|---|", coef(prior),
-        "",
-        f"Onset model (target: the gap `h_crit - onset`, so the onset enters with coefficient 1; assumption A-27): "
-        f"residual sd {onset.diagnostics['sigma_mm']:.2f} mm.",
-        "",
-        "| term | posterior mean (per unit) | sd |", "|---|---|---|", coef(onset),
-        "",
-        f"Gibbs diagnostics (naive Geweke z, |z|<2 suggests convergence): prior sigma {prior.diagnostics['geweke_z_sigma']:.2f}, "
-        f"onset sigma {onset.diagnostics['geweke_z_sigma']:.2f}.",
-        "",
-        "Die random effects (onset model, posterior mean mm): "
-        + ", ".join(f"{lv} {onset.effects['die_id'][:, i].mean() * onset.y_sd:+.2f}"
-                    for i, lv in enumerate(onset.levels["die_id"])),
-        "",
-        f"Decision latency (engine compute per cycle, offline Python): median {ev.compute_ms.median():.0f} ms, "
-        f"p99 {ev.compute_ms.quantile(0.99):.0f} ms. This covers the whole stroke replay; the live service only "
-        "does one incremental update per sample (Task 6.1 measures that).",
+        *_format_model_sections(prior, onset, ev),
     ]
     return "\n".join(lines)
 
@@ -307,8 +343,18 @@ def _cal_scores_gpu(prior: HierarchicalModel, onset: HierarchicalModel, val: pd.
     return (np.abs(h_crits - np.array(ms)) / np.array(ss))
 
 
-def main(n_train: int = 6000, n_cal: int = 1500, stride: int = 5, eval_only: bool = False,
-         device: str = "cpu") -> None:
+def main(*args, **kwargs) -> None:
+    spec_list = [
+        ("n_train", 6000),
+        ("n_cal", 1500),
+        ("stride", 5),
+        ("eval_only", False),
+        ("device", "cpu"),
+    ]
+    p = _parse_named_args(args, kwargs, spec_list)
+    n_train, n_cal = p["n_train"], p["n_cal"]
+    stride, eval_only, device = p["stride"], p["eval_only"], p["device"]
+
     df = load_cycles()
     st = DecisionSettings.load()
     model = DefectModel()

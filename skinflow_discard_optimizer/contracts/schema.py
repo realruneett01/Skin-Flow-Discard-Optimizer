@@ -65,6 +65,36 @@ class OutputNamespace(_Strict):
     signals: dict[str, OutputSpec]
 
 
+def _validate_tags(signals: dict, output_signals: dict, prefix: str, namespace_index: int) -> None:
+    all_tags = [s.tag for s in signals.values()] + [s.tag for s in output_signals.values()]
+    dupes = {t for t in all_tags if all_tags.count(t) > 1}
+    if dupes:
+        raise ValueError(f"duplicate OPC-UA tags: {sorted(dupes)}")
+    for tag in all_tags:
+        if not tag.startswith(prefix):
+            raise ValueError(f"tag {tag} is not in namespace index {namespace_index}")
+
+
+def _validate_output_namespaces(signals: dict, outputs: OutputNamespace, prefix: str) -> None:
+    ns = outputs.namespace
+    for name, spec in outputs.signals.items():
+        if not name.startswith(f"{ns}."):
+            raise ValueError(f"output {name} is outside the {ns}.* namespace")
+        if spec.tag != f"{prefix}{name}":
+            raise ValueError(f"output {name} has tag {spec.tag}, expected {prefix}{name}")
+    for name, spec in signals.items():
+        if f";s={ns}." in spec.tag:
+            raise ValueError(f"input signal {name} uses the reserved {ns}.* namespace")
+
+
+def _validate_phase_aliases(signals: dict, phase_aliases: dict) -> None:
+    phases = set(signals["cycle_phase"].values or ())
+    for source, mapping in phase_aliases.items():
+        unknown = set(mapping.values()) - phases
+        if unknown:
+            raise ValueError(f"phase_aliases[{source}] maps to unknown phases {sorted(unknown)}")
+
+
 class SignalContract(_Strict):
     version: int
     namespace_index: int
@@ -75,31 +105,9 @@ class SignalContract(_Strict):
     @model_validator(mode="after")
     def _check_consistency(self):
         prefix = f"ns={self.namespace_index};s="
-        all_tags = [s.tag for s in self.signals.values()] + [
-            s.tag for s in self.outputs.signals.values()
-        ]
-        dupes = {t for t in all_tags if all_tags.count(t) > 1}
-        if dupes:
-            raise ValueError(f"duplicate OPC-UA tags: {sorted(dupes)}")
-        for tag in all_tags:
-            if not tag.startswith(prefix):
-                raise ValueError(f"tag {tag} is not in namespace index {self.namespace_index}")
-
-        ns = self.outputs.namespace
-        for name, spec in self.outputs.signals.items():
-            if not name.startswith(f"{ns}."):
-                raise ValueError(f"output {name} is outside the {ns}.* namespace")
-            if spec.tag != f"{prefix}{name}":
-                raise ValueError(f"output {name} has tag {spec.tag}, expected {prefix}{name}")
-        for name, spec in self.signals.items():
-            if f";s={ns}." in spec.tag:
-                raise ValueError(f"input signal {name} uses the reserved {ns}.* namespace")
-
-        phases = set(self.signals["cycle_phase"].values or ())
-        for source, mapping in self.phase_aliases.items():
-            unknown = set(mapping.values()) - phases
-            if unknown:
-                raise ValueError(f"phase_aliases[{source}] maps to unknown phases {sorted(unknown)}")
+        _validate_tags(self.signals, self.outputs.signals, prefix, self.namespace_index)
+        _validate_output_namespaces(self.signals, self.outputs, prefix)
+        _validate_phase_aliases(self.signals, self.phase_aliases)
         return self
 
     def canonical_phase(self, name: str, source: str) -> str:

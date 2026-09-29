@@ -128,14 +128,13 @@ def load_models(path: Path = MODELS_PATH) -> tuple[HierarchicalModel, Hierarchic
 class CutEngine:
     def __init__(self, press: Press | None = None, settings: DecisionSettings | None = None,
                  prior_model: HierarchicalModel | None = None, onset_model: HierarchicalModel | None = None,
-                 calibrator: AdaptiveConformal | None = None, ukf_params: UKFParams | None = None,
-                 block: int = 20):
+                 **kwargs):
         self.press = press or Press.load()
         self.st = settings or DecisionSettings.load()
         self.prior_model, self.onset_model = prior_model, onset_model
-        self.cal = calibrator
-        self.ukf_params = ukf_params or UKFParams.for_press(self.press)
-        self.block = block
+        self.cal = kwargs.get("calibrator")
+        self.ukf_params = kwargs.get("ukf_params") or UKFParams.for_press(self.press)
+        self.block = kwargs.get("block", 20)
         self._alloys: dict[str, Alloy] = {}
 
     # ------------------------------------------------------------------ building blocks
@@ -206,24 +205,17 @@ class CutEngine:
             h_now = float(tr.h_mm[k])
             glr.update(h_now, tr.innovation[k], tr.S[k], tr.H[k])
             bo.update(h_now, tr.innovation[k] / np.sqrt(tr.S[k]))
-            if h_now <= next_eval_h:
-                next_eval_h = h_now - st.update_every_mm
-                if glr.fired_at_h is not None:
-                    sm = glr.summary()
-                    agree = bo.fired_at_h is not None and abs(bo.fired_at_h - glr.fired_at_h) <= 12.0
-                    conf = "high" if agree else "low"
-                    # use the onset only once it is sharp; a wide early extrapolation forced premature thick cuts
-                    if sm["h_onset_sd"] <= st.onset_sd_max_mm:
-                        onset = (sm["h_onset_mean"], sm["h_onset_sd"])
-                elif bo.fired_at_h is not None:
-                    conf = "low"         # something changed, but not an upturn the model understands
-                m, s = self._predict(f, onset)
-                ck.append(j)
-                ms.append(m)
-                ss.append(s)
-                confs.append(conf)
-                on_m.append(onset[0] if onset else np.nan)
-                on_s.append(onset[1] if onset else np.nan)
+            if h_now > next_eval_h:
+                continue
+            next_eval_h = h_now - st.update_every_mm
+            onset, conf = _eval_onset_alarm(glr, bo, st, onset, conf)
+            m, s = self._predict(f, onset)
+            ck.append(j)
+            ms.append(m)
+            ss.append(s)
+            confs.append(conf)
+            on_m.append(onset[0] if onset else np.nan)
+            on_s.append(onset[1] if onset else np.nan)
         return DecisionTrajectory(
             h=tr.h_mm[idx].astype(float), ck_idx=np.array(ck, int), m=np.array(ms), s=np.array(ss),
             conf=confs, onset_mean=np.array(on_m), onset_sd=np.array(on_s),
@@ -236,6 +228,19 @@ class CutEngine:
         d = resolve_commit(self.trajectory(si), self.st, self.cal)
         d.compute_ms = (time.perf_counter() - t0) * 1e3
         return d
+
+
+def _eval_onset_alarm(glr: OnsetGLR, bo: BOCPD, st: DecisionSettings,
+                      prev_onset: tuple[float, float] | None, prev_conf: str) -> tuple[tuple[float, float] | None, str]:
+    if glr.fired_at_h is not None:
+        sm = glr.summary()
+        agree = bo.fired_at_h is not None and abs(bo.fired_at_h - glr.fired_at_h) <= 12.0
+        conf = "high" if agree else "low"
+        onset = (sm["h_onset_mean"], sm["h_onset_sd"]) if sm["h_onset_sd"] <= st.onset_sd_max_mm else prev_onset
+        return onset, conf
+    if bo.fired_at_h is not None:
+        return prev_onset, "low"
+    return prev_onset, prev_conf
 
 
 @dataclass
@@ -277,21 +282,33 @@ def resolve_commit(tr: DecisionTrajectory, st: DecisionSettings, cal=None) -> Cy
     return _finish(tr, st, rec, float(tr.h[-1]), committed=False, j=n_ck - 1)
 
 
-def _finish(tr: DecisionTrajectory, st: DecisionSettings, rec: CutRecommendation, h_now: float,
-            committed: bool, j: int | None) -> CycleDecision:
-    # Updates arrive every ~0.24 mm, so the commit overshoots by at most that; the ram
-    # stops on the recommendation. "Late" means the recommendation jumped above where
-    # the ram already was (e.g. the onset fired late), so the ram cannot reach it.
-    late = h_now - st.latency_margin_mm < rec.h_cut_mm - LATE_TOLERANCE_MM
-    h_cut = rec.h_cut_mm if not late else max(h_now - st.latency_margin_mm, st.min_cut_mm)
-    if not committed:        # ran out of data (stroke shorter than the cut): stop where it ended
-        late, h_cut = True, max(h_now, st.min_cut_mm)
-    om = float(tr.onset_mean[j]) if j is not None and np.isfinite(tr.onset_mean[j]) else None
+def _compute_cut_position(h_now: float, rec: CutRecommendation, st: DecisionSettings, committed: bool) -> tuple[float, bool]:
+    if not committed:
+        return max(h_now, st.min_cut_mm), True
+    late = (h_now - st.latency_margin_mm) < (rec.h_cut_mm - LATE_TOLERANCE_MM)
+    if late:
+        return max(h_now - st.latency_margin_mm, st.min_cut_mm), True
+    return rec.h_cut_mm, False
+
+
+def _extract_trajectory_onset(tr: DecisionTrajectory, j: int | None, h_now: float) -> tuple[float | None, float | None, str, float | None]:
+    if j is None:
+        return None, None, "none", None
+    om = float(tr.onset_mean[j]) if np.isfinite(tr.onset_mean[j]) else None
     osd = float(tr.onset_sd[j]) if om is not None else None
-    conf = tr.conf[j] if j is not None else "none"
-    fired = tr.glr_fired_h if np.isfinite(tr.glr_fired_h) and tr.glr_fired_h >= h_now else None
+    fired = float(tr.glr_fired_h) if (np.isfinite(tr.glr_fired_h) and tr.glr_fired_h >= h_now) else None
+    return om, osd, tr.conf[j], fired
+
+
+def _finish(tr: DecisionTrajectory, st: DecisionSettings, rec: CutRecommendation, h_now: float,
+            **kwargs) -> CycleDecision:
+    committed: bool = kwargs.get("committed", True)
+    j: int | None = kwargs.get("j", None)
+    h_cut, late = _compute_cut_position(h_now, rec, st, committed)
+    om, osd, conf, fired = _extract_trajectory_onset(tr, j, h_now)
     f = dict(tr.features)
-    f.update({"onset_mm": om if om is not None else np.nan, "onset_sd_mm": osd if osd is not None else np.nan})
+    f["onset_mm"] = om if om is not None else np.nan
+    f["onset_sd_mm"] = osd if osd is not None else np.nan
     return CycleDecision(h_cut, rec, h_now, late, fired, om, osd, conf, f)
 
 

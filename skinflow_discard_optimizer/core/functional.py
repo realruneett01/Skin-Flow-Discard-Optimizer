@@ -74,8 +74,9 @@ class RegistrationGrid:
 
 
 def registered_curve(x_mm: np.ndarray, force_N: np.ndarray, L0_mm: float,
-                     grid: RegistrationGrid = RegistrationGrid(), dx_mm: float = 0.1) -> np.ndarray:
+                     grid: RegistrationGrid = RegistrationGrid(), **kwargs) -> np.ndarray:
     """Register one stroke (any x ordering) onto the common grid, averaging over each grid cell."""
+    dx_mm: float = kwargs.get("dx_mm", 0.1)
     c = resample_to_position(np.asarray(x_mm), np.asarray(force_N), dx_mm, x_min=0.0)
     xg = grid.x_of(L0_mm)
     spacing = np.gradient(xg)
@@ -107,6 +108,39 @@ class Projection:
     residual: np.ndarray
 
 
+def _fit_fpca(cls, curves: np.ndarray, grid: RegistrationGrid = RegistrationGrid(),
+              **kwargs) -> "FPCA":
+    n_components: int | None = kwargs.get("n_components", None)
+    max_components: int = kwargs.get("max_components", 12)
+    cv_folds: int = kwargs.get("cv_folds", 5)
+    rng: np.random.Generator | None = kwargs.get("rng", None)
+
+    curves = np.asarray(curves, dtype=float)
+    w = grid.weights()
+    sw = np.sqrt(w)
+    mean = curves.mean(axis=0)
+    Z = (curves - mean) * sw
+    _, s, vt = np.linalg.svd(Z, full_matrices=False)
+    lam = s**2 / (len(curves) - 1)
+    cv = None
+    if n_components is None:
+        cv = cv_missing_points(curves, grid, max_components, cv_folds, rng=rng)
+        n_components = choose_k(cv)
+    comps = vt[:n_components] / sw          # back to function space: sum_j w_j phi_a phi_b = delta
+    scores = (curves - mean) @ (comps * w).T
+    return cls(grid, mean, comps, lam[:n_components], np.cov(scores, rowvar=False).reshape(n_components, n_components),
+               w, lam[:n_components] / lam.sum(), cv, len(curves))
+
+
+def _load_fpca(cls, path: Path) -> "FPCA":
+    z = np.load(path)
+    a, b, c, n, s = z["grid"]
+    grid = RegistrationGrid(float(a), float(b), float(c), int(n), float(s))
+    cv = z["cv_errors"]
+    return cls(grid, z["mean"], z["components"], z["eigenvalues"], z["score_cov"], z["weights"],
+               z["explained_ratio"], cv if cv.size else None, int(z["n_train"]))
+
+
 @dataclass
 class FPCA:
     grid: RegistrationGrid
@@ -119,43 +153,26 @@ class FPCA:
     cv_errors: np.ndarray | None = None
     n_train: int = 0
 
+    fit = classmethod(_fit_fpca)
+    load = classmethod(_load_fpca)
+
     @property
     def k(self) -> int:
         return len(self.eigenvalues)
-
-    @classmethod
-    def fit(cls, curves: np.ndarray, grid: RegistrationGrid = RegistrationGrid(),
-            n_components: int | None = None, max_components: int = 12, cv_folds: int = 5,
-            rng: np.random.Generator | None = None) -> "FPCA":
-        curves = np.asarray(curves, dtype=float)
-        w = grid.weights()
-        sw = np.sqrt(w)
-        mean = curves.mean(axis=0)
-        Z = (curves - mean) * sw
-        _, s, vt = np.linalg.svd(Z, full_matrices=False)
-        lam = s**2 / (len(curves) - 1)
-        cv = None
-        if n_components is None:
-            cv = cv_missing_points(curves, grid, max_components, cv_folds, rng)
-            n_components = choose_k(cv)
-        comps = vt[:n_components] / sw          # back to function space: sum_j w_j phi_a phi_b = delta
-        scores = (curves - mean) @ (comps * w).T
-        return cls(grid, mean, comps, lam[:n_components], np.cov(scores, rowvar=False).reshape(n_components, n_components),
-                   w, lam[:n_components] / lam.sum(), cv, len(curves))
-
-    def project(self, curve: np.ndarray) -> Projection:
-        c = np.asarray(curve, dtype=float)
-        scores = (c - self.mean) @ (self.components * self.weights).T
-        recon = self.mean + scores @ self.components
-        resid = c - recon
-        return Projection(scores, recon, float(np.sum(self.weights * resid**2, axis=-1)), resid)
 
     def project_many(self, curves: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Scores (N, K) and SPE (N,) for a batch of registered curves."""
         c = np.asarray(curves, dtype=float)
         scores = (c - self.mean) @ (self.components * self.weights).T
         resid = c - (self.mean + scores @ self.components)
-        return scores, np.sum(self.weights * resid**2, axis=1)
+        assert scores.shape[-1] == self.k
+        return scores, np.sum(self.weights * resid**2, axis=-1)
+
+    def project(self, curve: np.ndarray) -> Projection:
+        scores, spe = self.project_many(curve[None, :])
+        recon = self.mean + scores[0] @ self.components
+        resid = np.asarray(curve, dtype=float) - recon
+        return Projection(scores[0], recon, float(spe[0]), resid)
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,18 +183,31 @@ class FPCA:
                  n_train=self.n_train,
                  grid=np.array([g.x_start_mm, g.h_tail_mm, g.h_min_mm, g.n_body, g.tail_step_mm]))
 
-    @classmethod
-    def load(cls, path: Path) -> "FPCA":
-        z = np.load(path)
-        a, b, c, n, s = z["grid"]
-        grid = RegistrationGrid(float(a), float(b), float(c), int(n), float(s))
-        cv = z["cv_errors"]
-        return cls(grid, z["mean"], z["components"], z["eigenvalues"], z["score_cov"], z["weights"],
-                   z["explained_ratio"], cv if cv.size else None, int(z["n_train"]))
+
+def _predict_missing_at_k(k: int, phi: np.ndarray, r_vis: np.ndarray, vis: np.ndarray, hide: np.ndarray) -> np.ndarray:
+    if k == 0:
+        return np.zeros(hide.sum())
+    A = phi[:k, vis].T
+    coef, *_ = np.linalg.lstsq(A, r_vis, rcond=None)
+    return coef @ phi[:k, hide]
+
+
+def _eval_curve_cv(c: np.ndarray, mean: np.ndarray, phi: np.ndarray, max_k: int,
+                   rng: np.random.Generator, hide_frac: float = 0.2) -> np.ndarray:
+    p = len(c)
+    hide = rng.random(p) < hide_frac
+    vis = ~hide
+    r = c - mean
+    r_vis = r[vis]
+    errs = np.zeros(max_k + 1)
+    for k in range(max_k + 1):
+        pred = _predict_missing_at_k(k, phi, r_vis, vis, hide)
+        errs[k] = np.mean((r[hide] - pred) ** 2)
+    return errs
 
 
 def cv_missing_points(curves: np.ndarray, grid: RegistrationGrid, max_k: int, folds: int = 5,
-                      rng: np.random.Generator | None = None, hide_frac: float = 0.2) -> np.ndarray:
+                      **kwargs) -> np.ndarray:
     """Cross-validated prediction error of hidden grid points, for K = 0..max_k.
 
     For each fold: fit mean and eigenfunctions on the other curves; for each held-out
@@ -185,8 +215,9 @@ def cv_missing_points(curves: np.ndarray, grid: RegistrationGrid, max_k: int, fo
     the visible points, and predict the hidden ones. Returns a ``(max_k+1, folds)``
     array of mean squared prediction errors (N^2).
     """
-    rng = rng or np.random.default_rng(0)
-    n, p = curves.shape
+    rng: np.random.Generator = kwargs.get("rng") or np.random.default_rng(0)
+    hide_frac: float = kwargs.get("hide_frac", 0.2)
+    n, _ = curves.shape
     w = grid.weights()
     sw = np.sqrt(w)
     fold_of = rng.permutation(n) % folds
@@ -197,17 +228,7 @@ def cv_missing_points(curves: np.ndarray, grid: RegistrationGrid, max_k: int, fo
         _, _, vt = np.linalg.svd((tr - mean) * sw, full_matrices=False)
         phi = vt[:max_k] / sw
         for c in te:
-            hide = rng.random(p) < hide_frac
-            vis = ~hide
-            r = c - mean
-            for k in range(max_k + 1):
-                if k == 0:
-                    pred = np.zeros(hide.sum())
-                else:
-                    A = phi[:k, vis].T
-                    coef, *_ = np.linalg.lstsq(A, r[vis], rcond=None)
-                    pred = coef @ phi[:k, hide]
-                errs[k, f] += np.mean((r[hide] - pred) ** 2) / len(te)
+            errs[:, f] += _eval_curve_cv(c, mean, phi, max_k, rng, hide_frac) / len(te)
     return errs
 
 
