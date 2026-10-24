@@ -1,5 +1,131 @@
-Copyright (c) 2026 realruneett01. All rights reserved.
+SKIN-FLOW DISCARD OPTIMIZER - PROPRIETARY SOFTWARE LICENSE AND CONFIDENTIALITY AGREEMENT
 
-This software and its documentation are proprietary and confidential. No licence is granted
-to use, copy, modify, distribute, host or create derivative works from it, in whole or in
-part, without prior written permission from the copyright holder.
+Copyright (c) 2026 [LEGAL NAME OF OWNER] ("Owner"). ALL RIGHTS RESERVED.
+
+DRAFT FOR COUNSEL REVIEW. The bracketed items must be completed and a qualified lawyer in each
+jurisdiction where this software is held or used must review this text. No licence text, however
+strict, can bind a person who never accepted it, override mandatory law, or substitute for
+access control, confidentiality agreements and trade-secret practice.
+
+1. NO LICENCE BY DEFAULT
+The Software (all source code, object code, models, fitted artifacts, parameters, configuration,
+scenario libraries, data, documentation, designs, algorithms and methods, and every copy or portion of
+them) is the confidential property and trade secret of Owner. Possession, access, download, viewing or
+receipt of the Software, on any medium and from any source, grants NO right or licence of any kind,
+express, implied, by estoppel or otherwise. Any use not expressly permitted in a separate, signed,
+written agreement with Owner is prohibited and is infringement and misappropriation.
+
+2. PROHIBITED ACTS
+Without Owner's prior written consent you shall not, and shall not permit or assist anyone to:
+(a) use, run, install, host, or make available the Software, including for evaluation or testing;
+(b) copy, reproduce, publish, post, upload, sync, mirror, fork or distribute it, in whole or in part;
+(c) modify, adapt, translate, or create derivative works or compilations that include or are derived from it;
+(d) reverse engineer, decompile, disassemble, or otherwise attempt to derive source code, algorithms, model
+    parameters, training data, or structure from the Software or its outputs, except to the limited extent
+    that applicable law expressly permits despite this prohibition and only after giving Owner written notice
+    and a reasonable opportunity to supply the information;
+(e) use the Software, its outputs, or its fitted models to train, fine-tune, distil, evaluate for imitation,
+    or build any machine-learning system, surrogate model, or competing product or service;
+(f) extract, replicate or approximate its models, calibrations or parameters by querying, probing or
+    observing it;
+(g) remove, alter or obscure any notice, marking, fingerprint, watermark or integrity mechanism;
+(h) circumvent, disable or tamper with any safeguard, including the preflight gate, integrity manifest,
+    advisory-only restriction, read-only output restriction or safety bounds;
+(i) sublicense, sell, rent, lease, lend, pledge, host as a service, or use for the benefit of any third party;
+(j) publish or disclose benchmark, performance, validation or comparison results without written consent;
+(k) use it to design, develop, or support any product or service that competes with Owner;
+(l) file, or assist in filing, any patent or other intellectual-property application claiming or based on any
+    subject matter disclosed by the Software.
+
+3. CONFIDENTIALITY
+The Software and all information about its design and performance are Confidential Information. You shall
+hold it in strict confidence, protect it with at least the care you use for your most valuable secrets and
+never less than reasonable care, restrict access to individuals who need it and are bound by written
+obligations at least as protective as these, and not disclose it to anyone else. You shall notify Owner at
+once of any actual or suspected unauthorised access, use or disclosure and cooperate in its remediation.
+These obligations continue for as long as any Confidential Information remains a trade secret under
+applicable law, and in any event for no less than ten (10) years after the last disclosure to you.
+Compelled disclosure is allowed only after prompt written notice to Owner (where lawful) and only of the
+minimum required.
+
+4. OWNERSHIP; FEEDBACK
+Owner retains all right, title and interest, including all intellectual property rights, in the Software and in
+all improvements, modifications, derivative works, corrections and suggestions relating to it, however
+created and by whomever. To the extent any such right vests in you, you irrevocably assign it to Owner and
+waive moral rights to the extent permitted by law. Nothing here transfers any Owner right to you.
+
+5. AUTHORISED USE UNDER A SIGNED AGREEMENT
+Where Owner grants a signed written licence, it is limited, non-exclusive, non-transferable, revocable,
+non-sublicensable, limited to the named licensee, press(es), site and term, and subject to every restriction
+here. Owner may audit use on reasonable notice. Any right not expressly granted is reserved.
+
+6. ADVISORY SOFTWARE; INDUSTRIAL SAFETY; YOUR RESPONSIBILITY
+The Software produces advisory recommendations only and is not a safety function, a protection system or a
+substitute for qualified operators, engineering controls, interlocks or established procedures. It has been
+validated, if at all, on simulation, not on your equipment. You alone are responsible for deciding whether to
+act on any output and for all consequences, including material waste, defects, scrap, downtime, equipment
+damage, environmental harm, injury and death. You shall not use the Software in any way that makes safety
+or regulatory compliance depend on it.
+
+7. NO WARRANTY
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE" WITH ALL FAULTS. TO THE MAXIMUM EXTENT PERMITTED BY
+LAW, OWNER DISCLAIMS ALL WARRANTIES, CONDITIONS AND REPRESENTATIONS, EXPRESS, IMPLIED OR STATUTORY,
+INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, RELIABILITY, NON-INFRINGEMENT,
+TITLE, QUIET ENJOYMENT, AND ANY ARISING FROM COURSE OF DEALING OR USAGE OF TRADE. OWNER DOES NOT WARRANT
+THAT THE SOFTWARE WILL BE ERROR-FREE, UNINTERRUPTED, SECURE, OR THAT ANY SAVING OR RESULT WILL BE ACHIEVED.
+
+8. LIMITATION OF LIABILITY
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, OWNER AND ITS CONTRIBUTORS, AFFILIATES, LICENSORS AND SUPPLIERS
+SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY OR PUNITIVE DAMAGES, OR
+FOR LOSS OF PROFIT, REVENUE, PRODUCTION, DATA, GOODWILL OR OPPORTUNITY, OR COST OF SUBSTITUTE GOODS,
+HOWEVER CAUSED, UNDER ANY THEORY (CONTRACT, TORT INCLUDING NEGLIGENCE, STRICT LIABILITY OR OTHERWISE), EVEN IF
+ADVISED OF THE POSSIBILITY. OWNER'S TOTAL AGGREGATE LIABILITY FOR ALL CLAIMS SHALL NOT EXCEED THE GREATER
+OF (A) THE FEES YOU PAID OWNER FOR THE SOFTWARE IN THE TWELVE MONTHS BEFORE THE CLAIM AND (B) ONE
+HUNDRED UNITED STATES DOLLARS (US$100). THESE LIMITS APPLY EVEN IF A REMEDY FAILS OF ITS ESSENTIAL
+PURPOSE, AND ARE AN ESSENTIAL BASIS OF THE BARGAIN. NOTHING EXCLUDES LIABILITY THAT CANNOT BE EXCLUDED BY LAW.
+
+9. INDEMNITY
+You shall defend, indemnify and hold harmless Owner and its contributors, affiliates, licensors and
+suppliers from and against all claims, losses, liabilities, damages, penalties, costs and expenses
+(including reasonable legal fees) arising from your use of or reliance on the Software, your breach of this
+Agreement, or any claim by a third party relating to your operations, products or equipment.
+
+10. REMEDIES
+You acknowledge that a breach of Sections 2, 3 or 4 would cause irreparable harm for which damages are an
+inadequate remedy. Owner is entitled to injunctive and other equitable relief, without bond or proof of
+actual damages, in addition to every other remedy, including an account and disgorgement of profits,
+statutory and exemplary damages where available, and recovery of its legal fees and costs of enforcement.
+You waive any defence that damages would be adequate.
+
+11. TERM AND TERMINATION
+This Agreement applies from your first access to the Software. Any permission under Section 5 ends
+immediately and automatically on breach, and Owner may terminate it at any time on notice. On termination or
+request you shall stop all use, and within seven (7) days permanently destroy every copy in your possession or
+control (including backups, caches, images, containers, and copies in repositories and AI or developer tools)
+and certify destruction in writing signed by an officer. Sections 1-4 and 6-16 survive.
+
+12. EXPORT AND COMPLIANCE
+You shall comply with all export-control, sanctions, anti-corruption and data-protection laws applicable to
+you and the Software. You shall not export, re-export or transfer the Software to any prohibited country,
+person or end use.
+
+13. GOVERNING LAW; DISPUTES
+This Agreement is governed by the laws of [GOVERNING JURISDICTION], without regard to conflict-of-law
+rules. The courts of [COURT LOCATION] have exclusive jurisdiction, and you submit to them and waive
+objections of venue and inconvenient forum, except that Owner may seek injunctive relief in any court
+of competent jurisdiction. The United Nations Convention on Contracts for the International Sale of Goods does
+not apply. EACH PARTY WAIVES TRIAL BY JURY AND ANY RIGHT TO BRING OR JOIN A CLASS OR REPRESENTATIVE ACTION.
+
+14. NO WAIVER; SEVERABILITY; ASSIGNMENT
+Failure to enforce is not a waiver. If any provision is held unenforceable it shall be enforced to the
+maximum extent permitted and the rest remain in force. You may not assign or transfer this Agreement or any
+right under it, by operation of law or otherwise; Owner may assign it freely.
+
+15. THIRD-PARTY COMPONENTS
+This Software depends on third-party open-source libraries (for example NumPy, SciPy, pandas, PyArrow,
+Pydantic, PyYAML, Matplotlib, tabulate, asyncua, PyTorch), each under its own licence, which governs that
+component only. Nothing here restricts rights granted to you by those licences in those components.
+
+16. ENTIRE AGREEMENT
+This is the entire agreement about its subject matter and supersedes all prior understandings. It may be
+amended only in a writing signed by Owner. Notices to Owner: [NOTICE ADDRESS / EMAIL].

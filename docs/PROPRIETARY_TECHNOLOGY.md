@@ -35,6 +35,7 @@ This inventory comes from reading the code in this repository. It separates thre
 | C9 | **Provenance-enforced configuration.** Every numeric parameter must carry `status` (PLACEHOLDER or SOURCED) and `SOURCE`, or loading fails. | No unsourced constant can reach a model or an ROI figure unmarked. | `config.py` |
 | C10 | **Layer-by-layer ablation.** Each of the seven layers must show a measured contribution or be removed. | Tells you which parts earn their keep. | `eval/ablation.py` |
 | C11 | **Three-module value platform on one tag stream** (SKDO, DCTO, HPEO) with a shared signal contract and low/expected/high ROI with intervals. | DCTO and HPEO live in other repositories; only SKDO's side is here. | `contracts/signals.yaml`, `roi/engine.py` |
+| C12 | **Machine-bound deployment gate and portable bundle.** A preflight that must pass on *this* machine with *this* config, contract and models before the service starts. It includes a loopback test proving the live OPC-UA path reproduces the direct-replay cut. The bundle is self-contained and hash-verified, and sticky model tiers let prebuilt models travel. | Engineering integration rather than a novel algorithm; useful as a commercial control more than as a patent claim. | `deploy/preflight.py`, `deploy/bundle.py` |
 
 ## 3. Assets (ours by construction)
 

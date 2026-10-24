@@ -1,67 +1,109 @@
 # Deployment
 
-One command per machine. The deploy layer reads the host, sizes a model-build profile to it,
-configures the press's signal contract, builds the models on first start, proves the result with a
-smoke test, then runs the service.
-
 ```
-skdo up        probe -> configure -> bootstrap -> smoke test -> run
+skdo up        probe -> configure -> bootstrap -> PREFLIGHT GATE -> run
 ```
 
-## Options
+`skdo up` reads the host, sizes a model-build profile to it, configures the press's signal contract, builds
+models if they are missing, runs the preflight gate, and only then starts. If the gate fails, nothing starts.
+
+## Status of each path (be honest about what has been run)
+
+| Path | Built | Run end to end |
+|---|---|---|
+| Linux x86_64, venv or USB bundle | yes | **yes** (development sandbox) |
+| OPC-UA subscribe -> decide -> publish, against the **simulated** press | yes | **yes**; cuts equal the direct-replay cuts |
+| OPC-UA against a **real** PLC | yes | **no** |
+| Windows, Linux ARM64, macOS bundles | yes (wheels resolve for cp312 win_amd64 / linux_aarch64 / macos_arm64) | **no**, see `docs/VERIFY_ON_TARGETS.md` |
+| Docker (CPU, GPU), docker compose | yes | **no** (no Docker daemon was available) |
+| systemd unit, `deploy/install.sh` | yes | install.sh ran into a venv; the **unit was never started** |
+| GitHub Actions workflow | yes | **no** |
+
+## USB stick
+
+Build once on any machine with internet:
+
+```
+skdo bootstrap                                   # build models on a strong machine first (SKDO_TIER=full recommended)
+skdo configure --press-id Press07 --namespace 3 --endpoint opc.tcp://192.168.0.10:4840
+skdo bundle /media/usb/skdo \
+    --target cp312-win_amd64 --target cp312-linux_x86_64 --target cp312-linux_aarch64 \
+    --embed-python python-3.12.x-embed-amd64.zip      # Windows machines then need nothing installed
+```
+
+Get the embeddable zip from python.org (Python 3.12, "Windows embeddable package (64-bit)"). Each target adds
+roughly 250-300 MB of unpacked libraries; prebuilt models and data are copied from `artifacts/` and `data/`.
+
+On the target machine, plug in the stick and start the launcher: `START-WINDOWS.bat`, `sh start.sh`, or
+`start-macos.command`. Operating systems do not auto-run programs from USB drives, and this software does not
+try to make them. The launcher:
+
+1. selects the libraries matching this machine's OS, CPU and Python (nothing is installed; state stays on the stick);
+2. **verifies the stick has not been altered** against `MANIFEST.sha256` (code, config and libraries are hashed; models and logs are not);
+3. keeps the tier the models were built with, so prebuilt models are used as they are;
+4. runs the **preflight gate** on *this* machine (the result is bound to the machine, the config, the contract and the models);
+5. starts the live service if an OPC-UA endpoint is configured.
+
+## The preflight gate (`skdo preflight`)
+
+| Check | Fails the gate when |
+|---|---|
+| python, contract | Python < 3.11, contract invalid or contains a setpoint-like tag |
+| state dir, artifacts | state directory not writable, models missing |
+| decision cycle | a real cycle does not complete inside the [12, 60] mm bounds |
+| OPC-UA loopback | the live path over OPC-UA does not give the same cut as direct replay of the same cycle (a simulated press is served on local ports) |
+| Predictor nodes read-only | a client could write the advisory tags |
+| required tags deliver data | a configured press endpoint does not deliver all 16 tags during the listening window |
+| values in range, monotonic timestamps | tags are out of contract range or timestamps go backwards |
+
+Warnings (do not fail): latency over the 200 ms budget, models built with a different config, sample rates
+below half the contract rate, ram signals constant (run commissioning while a billet is being extruded),
+and PLACEHOLDER parameters.
+
+### What "calibrates itself" means here
+
+- **Signal-level commissioning: yes.** Presence, range, rate, timestamps and variation of every required tag are
+  measured on the real press and written to `artifacts/commissioning.json`.
+- **Host-level sizing: yes.** Model size and workers follow the machine.
+- **Process-model calibration: no.** Fitting the physics and defect model to your press needs matched force curves
+  and discard-quality labels (README, "Pilot programme"). Nothing here can learn that from the tags alone.
+
+## Other install routes
 
 | Where | How |
 |---|---|
 | Docker (CPU) | `cp deploy/skdo.env.example deploy/skdo.env`, edit, `docker compose up -d` |
-| Docker (NVIDIA GPU) | `docker compose --profile gpu up -d skdo-gpu` (needs nvidia-container-toolkit) |
-| Bare Linux + systemd | `sudo deploy/install.sh` (adds `--gpu` automatically when `nvidia-smi` sees a GPU) |
-| Developer machine | `pip install -e ".[dev]" && skdo up -- --mock --mock-cycles 50` |
+| Docker (NVIDIA GPU) | `docker compose --profile gpu up -d skdo-gpu` |
+| Bare Linux + systemd | `sudo deploy/install.sh`, edit `/etc/skdo/skdo.env`, `sudo systemctl enable --now skdo` |
+| Developer | `pip install -e ".[dev]" && skdo up -- --mock --mock-cycles 50` |
+| No press, test the whole path | `skdo simulate-press` in one terminal, `skdo up --endpoint opc.tcp://127.0.0.1:4842/press` in another |
 
 ## What gets auto-configured
 
-**From the host** (`skdo probe` shows the result):
-
-| Detected | Effect |
-|---|---|
-| Usable cores (honours cgroup CPU limits and affinity), RAM (honours cgroup limit) | Picks a tier: `edge` (≤2 cores or <4 GB), `standard`, `full` (≥8 cores and ≥16 GB). The tier sets simulated dataset size, fit sample sizes and worker count. |
-| NVIDIA GPU and CUDA-enabled torch | Decision fitting and batched inference run on `cuda`. Edge tier stays on CPU. |
-| Container vs bare metal | Reported only. |
+**From the host** (`skdo probe`): tier from usable cores and RAM (container limits respected): `edge` (<=2 cores or <4 GB),
+`standard`, `full` (>=8 cores and >=16 GB); GPU use when CUDA torch is present. Existing models keep their tier.
 
 **From the press** (`site/site.yaml`, or `SKDO_PRESS_ID`, `SKDO_OPCUA_NAMESPACE`, `SKDO_OPCUA_ENDPOINT` on first start):
-`skdo configure` rewrites `contracts/signals.yaml` for that press (tag prefix, OPC-UA namespace index,
-per-signal tag overrides) into `site/signals.yaml` and validates it with the contract schema before writing
-anything. A bad override fails at configure time. `Predictor.*` output tags cannot be overridden, so the
-advisory-only guarantee holds on every site.
+`skdo configure` rewrites `contracts/signals.yaml` for that press and validates it before saving.
+`Predictor.*` outputs cannot be overridden.
 
-```
-skdo configure --press-id Press07 --namespace 3 --endpoint opc.tcp://10.0.0.5:4840 \
-               --tag ram_cap_pressure=PLC.Main.CapP
-```
+**From the config**: `skdo bootstrap` fingerprints `config/*.yaml` and rebuilds only the affected stages.
 
-**From the config**: `skdo bootstrap` fingerprints `config/*.yaml` and the scenarios. Change a press
-parameter and only the affected downstream stages rebuild. `skdo bootstrap --status` shows
-`done` / `stale` / `missing` per stage. Workers and device are left out of the fingerprint, so models built on a big
-host are valid on a small one when you pin `SKDO_TIER=full` there.
-
-Overrides: `SKDO_TIER`, `SKDO_WORKERS`, `SKDO_DEVICE`, `SKDO_DATASET_SCALE`, `SKDO_LATENCY_BUDGET_MS`.
-
-## Check an install
-
-`skdo doctor` checks Python and dependencies, the signal contract (and that it has no setpoint tags), config
-provenance (warns how many parameters are still PLACEHOLDER), writable artifact directory, model artifacts
-present and current, and runs a 3-cycle smoke test through the real service. Exit code 1 on any failure.
-The container health check runs `skdo doctor --quick`.
+Overrides: `SKDO_TIER`, `SKDO_WORKERS`, `SKDO_DEVICE`, `SKDO_DATASET_SCALE`, `SKDO_LATENCY_BUDGET_MS`,
+`SKDO_OPCUA_USER`/`SKDO_OPCUA_PASSWORD` (client username auth).
 
 ## Limits you should know about
 
-- **No live OPC-UA client exists in this repository.** `service/run.py` runs `--mock` (digital twin) or
-  `--replay <parquet>`. The README's "live OPC-UA mode" is not implemented. `site.yaml` stores the endpoint
-  and the contract carries the tags, but something has to subscribe to them and feed `CycleAssembler`. That
-  adapter is the main thing missing for a real press. The default container command therefore runs a short
-  mock stream.
-- **Smaller tiers produce less-validated models.** The 90 % interval coverage and the backtest numbers were produced
-  at full scale. `edge` and `standard` trade calibration data for build time (the conformal calibration set is
-  a few hundred cycles instead of ~1,500). For real presses, build once on a `full` host and copy `artifacts/` over.
-- **All models are built from the digital twin with PLACEHOLDER parameters** until calibrated on real force curves.
-  Treat any output as a demonstration of the pipeline, not of savings.
-- The bootstrap time depends on the tier. Measure it on your hardware with `skdo bootstrap`.
+- **Everything is built from a digital twin with PLACEHOLDER parameters** until calibrated on real force curves.
+  A passing preflight means the software is installed and wired correctly, not that its cuts are right for your press.
+- **OPC-UA security is `None` by default** on both sides. Put the machine on the control network behind a firewall, or
+  extend `service/opcua_source.py` with certificates before connecting it to anything that matters. The `Predictor.*`
+  server is read-only for clients but unauthenticated.
+- **1 kHz delivery over OPC-UA depends on the press server.** Commissioning reports the observed rates; if the PLC
+  cannot deliver, the cut decision has less data.
+- **Smaller tiers give less-validated models.** Coverage and backtest numbers come from the full tier. For real presses,
+  build once on a `full` host and ship the models (USB bundle).
+- **Latency:** the full service path measured 240-360 ms per cycle on a 4-vCPU Linux host (budget 200 ms). The first cycle
+  after start is slower (seconds). The budget only produces a warning; the cut is still published.
+- The bundle verifies integrity, it does not authenticate the author (no signature). Treat the stick as you treat any
+  executable media.

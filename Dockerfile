@@ -27,5 +27,5 @@ HEALTHCHECK --interval=60s --timeout=30s --start-period=3600s --retries=3 CMD ["
 
 # `skdo up` = configure from SKDO_* env, size a profile to this host, build missing models, smoke test, run.
 ENTRYPOINT ["skdo", "up"]
-# Default is a short self-test stream from the digital twin. Replace for real use (see docs/DEPLOYMENT.md).
-CMD ["--", "--mock", "--mock-cycles", "20"]
+# Reads the press at $SKDO_OPCUA_ENDPOINT. Demo without a press:  docker run --rm skdo -- --mock --mock-cycles 20
+CMD []

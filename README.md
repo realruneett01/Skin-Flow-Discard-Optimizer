@@ -13,12 +13,25 @@
 ![SciPy](https://img.shields.io/badge/SciPy-1.12%2B-8CAAE6?style=for-the-badge&logo=scipy&logoColor=white)
 ![Pydantic](https://img.shields.io/badge/Pydantic-v2-E92063?style=for-the-badge&logo=pydantic&logoColor=white)
 ![OPC-UA](https://img.shields.io/badge/OPC--UA-advisory--only-00A86B?style=for-the-badge)
-![Tests](https://img.shields.io/badge/Tests-23%20modules-6366F1?style=for-the-badge&logo=pytest&logoColor=white)
+![Tests](https://img.shields.io/badge/Tests-24%20modules-6366F1?style=for-the-badge&logo=pytest&logoColor=white)
 
 <br/>
 
 > **Third module of the [Press Value Platform](#-press-value-platform)**
-> Part of a three-module advisory system targeting **221–384 kEUR/yr** combined savings per press.
+> Part of a three-module advisory system. The 221–384 kEUR/yr combined figure is a **simulation estimate built on PLACEHOLDER economics**, not a measured saving.
+
+> [!IMPORTANT]
+> **Status — read this first**
+>
+> | | |
+> |---|---|
+> | ✅ **Exists and is tested here** | the decision pipeline, safety gate, digital twin, backtest, deploy tooling (`skdo`), live OPC-UA subscriber and read-only `Predictor.*` publisher, USB bundle builder, preflight gate |
+> | ⚠️ **Simulation only** | every performance and savings number below. The models are fitted to a digital twin; **no real press data has ever been used** |
+> | ⚠️ **Placeholder inputs** | 133 of 135 parameters in `config/` are `PLACEHOLDER` (assumed, not measured) |
+> | ❌ **Not yet done** | validation on a real press; the OPC-UA path has only been run against a *simulated* press server, never a real PLC; Windows, ARM, macOS, Docker and systemd packaging are built but not run in the environment where this was developed |
+> | ⚠️ **Not reproduced** | the 15.8 ms latency figure (see the results table) |
+>
+> Advisory only: the software never writes to the press.
 
 </div>
 
@@ -44,7 +57,7 @@ The cost is silent and continuous: **recoverable aluminium lost on every single 
 ╚══════════════════════════════════════════════════════════════════════╝
 ```
 
-**SKDO replaces the static rule with a per-billet adaptive recommendation** — reading live 1 kHz force-curve signals, detecting skin-flow onset in real time, and publishing a tighter cut to the operator HMI before the ram stops.
+**SKDO replaces the static rule with a per-billet adaptive recommendation** — reading 1 kHz force-curve signals (from a simulated stream, a recording, or an OPC-UA subscription), detecting skin-flow onset, and publishing a tighter cut recommendation as read-only advisory tags. Its intended use is to show that cut to the operator before the ram stops; that has not been demonstrated on a real press.
 
 ---
 
@@ -80,6 +93,9 @@ graph LR
 | 🏆 **Joint Total** | All three modules | **221** | **294** | **384 kEUR/yr** |
 
 _Economics: aluminium spread 0.50 EUR/kg · tariff 64.3 EUR/MWh · press rate 950 EUR/hr · 309,600 cycles/yr._
+
+> [!WARNING]
+> These are modelled, not measured: every economic input in `config/economics.yaml` is PLACEHOLDER, the underlying performance comes from a digital twin, and only the SKDO row is computable from this repository (the DCTO and HPEO rows come from sibling repositories not included here).
 
 ---
 
@@ -316,9 +332,9 @@ Evaluated on a **rolling-origin backtest** across **13 scenarios** (11 developme
 | Net saving per billet | **0.390 EUR** | [0.346, 0.463] | > 0 | ✅ PASS |
 | Defect rate | **0.56 / 1,000 billets** | [0.44, 0.68] | ≤ static baseline | ⚠️ CAUTION |
 | False-alarm rate | **4.9 / 1,000 cycles** | [2.9, 7.4] | ≤ 5.0 / 1,000 | ✅ PASS |
-| Warning lead time (median) | **300 cycles (~7 h)** | [−29, 1,546] | median > 0 | ✅ PASS |
+| Warning lead time (median) | **300 cycles (~7 h)** | [−29, 1,546] | median > 0 | ⚠️ median passes, but the interval includes negative lead times |
 | Conformal coverage | **91.4%** | [90.9%, 92.1%] | 90% ± 2% | ✅ PASS |
-| Cut-decision latency (p99) | **15.8 ms** | — | < 200 ms | ✅ PASS |
+| Cut-decision latency (median, per `eval/backtest.py`) | **15.8 ms** | — | < 200 ms | ⚠️ NOT REPRODUCED — `skdo preflight` measured 240–360 ms per cycle for the full service path on a 4-vCPU Linux host |
 
 > [!WARNING]
 > **Defect rate ⚠️ CAUTION.** SKDO introduces a small positive defect risk by cutting closer to the skin-flow boundary. The absolute rate (0.56/1,000) is well below typical industry total-reject rates of 5–15/1,000. The CAUTION flag is deliberate transparency, not a safety failure.
@@ -414,7 +430,9 @@ skinflow_discard_optimizer/          # Main Python package (v0.1.0)
 │   └── stress.py                    #   Safety-gate stress tests (7 scenarios)
 │
 ├── service/                         # Streaming service
-│   ├── run.py                       #   OPC-UA subscriber → decision loop
+│   ├── run.py                       #   Decision service: mock stream or parquet replay
+│   ├── opcua_source.py              #   Live OPC-UA subscriber + read-only Predictor.* server
+│   ├── sim_press.py                 #   Simulated press OPC-UA server for testing
 │   └── replay.py                    #   Parquet-replay mode (no live press)
 │
 ├── roi/                             # ROI aggregation
@@ -451,7 +469,7 @@ docs/
     ├── 04_assumptions_and_limits.md
     └── 05_demo_script.md
 
-tests/                               # 23 pytest modules
+tests/                               # 24 pytest modules (test_service / test_fault_id need built artifacts)
 ```
 
 ---
@@ -528,7 +546,7 @@ Full audit in [`docs/integration_audit.md`](docs/integration_audit.md). Key conf
 |---|---|---|
 | C1 | Phase names differ (DCTO: 8 phases, HPEO: 7) | Canonical enum in `contracts/signals.yaml` with alias maps from both |
 | C5 | DCTO publishes ram position under node name `ContainerPosition` | Contract separates `ram_position` and `container_position` |
-| C6 | DCTO and HPEO both bind `opc.tcp://127.0.0.1:4840` | SKDO subscribes only; mock mode uses port **4842** |
+| C6 | DCTO and HPEO both bind `opc.tcp://127.0.0.1:4840` | SKDO subscribes only; its simulated press (`skdo simulate-press`) defaults to port **4842** and its own read-only `Predictor.*` server to **4841** |
 | C7 | Both have top-level `simulator/` and `opcua/` packages | All SKDO code lives under `skinflow_discard_optimizer/`; sibling repos never added to `sys.path` |
 | C9 | DCTO pins `numpy<2.0`; this environment uses numpy 2.x | SKDO targets numpy 2.x; DCTO code never imported at runtime |
 | C11 | HPEO writes pump staging setpoints | SKDO is advisory only — writes only `Predictor.*` |
@@ -550,7 +568,7 @@ Full audit in [`docs/integration_audit.md`](docs/integration_audit.md). Key conf
 | 2 | **Alloy calibration** | Only AA6063/AA6082 are calibrated; 200–500 billets/alloy needed | `core/estimator/hierarchical.py` |
 | 3 | **Defect labelling** | `h_crit` is simulated; 3–6 months of matched quality-gate records needed | `sim/defect_model.py` |
 | 4 | **OPC-UA tag mapping** | Tag names must be mapped against `contracts/signals.yaml` per press controller | `contracts/signals.yaml` |
-| 5 | **Latency verification** | p99 < 200 ms confirmed under sim load; real OPC-UA jitter must be measured | `service/run.py → ServiceHealth` |
+| 5 | **Latency verification** | The 200 ms target is **not** confirmed: the service path measured 240–360 ms per cycle on a 4-vCPU host; real OPC-UA jitter must be measured too | `service/run.py → ServiceHealth` |
 | 6 | **🔑 Key hypothesis** | Onset must lead h\_crit by > 0 mm on real force curves — measure this **first** | `config/press.yaml → onset_direction` |
 
 > [!CAUTION]
@@ -597,13 +615,21 @@ python -m skinflow_discard_optimizer.eval.stress
 python -m skinflow_discard_optimizer.service.replay
 ```
 
+**Run against a simulated OPC-UA press (no hardware):**
+```bash
+skdo simulate-press &                       # serves the press tags on opc.tcp://0.0.0.0:4842/press
+skdo up --endpoint opc.tcp://127.0.0.1:4842/press
+```
+Real press: `skdo configure --press-id … --namespace … --endpoint opc.tcp://<plc>:4840`, then `skdo preflight`, then `skdo up`.
+Plug-and-run USB stick: see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#usb-stick).
+
 **Run the streaming service — simulated stream:**
 ```bash
 python -m skinflow_discard_optimizer.service.run --mock --mock-cycles 50
 ```
 
-> The service currently ingests the digital-twin stream (`--mock`) or a recorded parquet file (`--replay`).
-> A live OPC-UA subscriber is not part of this repository yet.
+> Inputs: the digital-twin stream (`--mock`), a recorded parquet file (`--replay`), or an OPC-UA subscription (`--endpoint`).
+> The OPC-UA path has been exercised only against the bundled simulated press, not a real controller.
 
 **Deploy on a machine (auto-detects hardware, configures the press, builds models, runs):**
 ```bash
@@ -620,7 +646,7 @@ See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). What is proprietary here: [`docs
 </div>
 
 ```bash
-pytest                    # all 23 test modules
+pytest                    # needs `pip install -e .[dev]`; test_service/test_fault_id also need `skdo bootstrap` (full tier)
 pytest -m "not slow"      # skip long-running tests
 pytest tests/test_ukf.py -v
 ```

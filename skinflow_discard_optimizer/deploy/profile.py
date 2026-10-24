@@ -49,12 +49,31 @@ def choose_tier(h: HostFacts) -> tuple[str, str]:
     return "standard", f"{h.cpu_count} cores, {h.ram_gb} GB RAM"
 
 
-def build_profile(h: HostFacts, env: dict[str, str] | None = None) -> DeployProfile:
-    """Auto profile for ``h``; ``SKDO_*`` environment variables override individual fields."""
+def _built_tier() -> str | None:
+    """Tier the existing artifacts were built with (recorded by ``skdo bootstrap``), if any."""
+    import json
+
+    from skinflow_discard_optimizer.paths import ARTIFACTS_DIR
+
+    try:
+        t = json.loads((ARTIFACTS_DIR / "bootstrap_state.json").read_text()).get("_tier")
+    except (OSError, ValueError):
+        return None
+    return t if t in _TIERS else None
+
+
+def build_profile(h: HostFacts, env: dict[str, str] | None = None, sticky: bool = False) -> DeployProfile:
+    """Auto profile for ``h``; ``SKDO_*`` environment variables override individual fields.
+
+    With ``sticky``, existing artifacts keep the tier they were built with, so models prebuilt on a big
+    machine (e.g. shipped on a USB stick) are used as they are instead of being rebuilt for a smaller host.
+    """
     env = dict(os.environ if env is None else env)
     tier, why = choose_tier(h)
     if env.get("SKDO_TIER") in _TIERS:
         tier, why = env["SKDO_TIER"], "SKDO_TIER override"
+    elif sticky and _built_tier():
+        tier, why = _built_tier(), "tier of the existing models"
     scale, fstride, fn, fnv, kt, ke, ntr, nca, fs = _TIERS[tier]
 
     reasons = [f"tier={tier} ({why})"]

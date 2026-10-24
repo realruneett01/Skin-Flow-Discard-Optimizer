@@ -23,7 +23,7 @@ STATE_FILE = ARTIFACTS_DIR / "bootstrap_state.json"
 SCENARIO_DIR = REPO_ROOT / PKG / "sim" / "scenarios"
 
 # Files the running service needs. Anything missing here means the service would fall back.
-REQUIRED_ARTIFACTS = ("fpca.npz", "hcrit_models.npz", "ukf_params.json", "monitor_config.npz")
+REQUIRED_ARTIFACTS = ("fpca.npz", "hcrit_models.npz", "ukf_params.json", "monitor_config.npz", "fault_signatures.npz")
 
 
 @dataclass(frozen=True)
@@ -127,6 +127,7 @@ def bootstrap(p: DeployProfile, force: bool = False, log=print) -> dict[str, str
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     keys = stage_keys(p)
     state = {} if force else _load_state()
+    state["_tier"] = p.tier
     dirty = force
     for s in stages(p):
         current = state.get(s.name) == keys[s.name] and all(_exists(o) for o in s.outputs)
@@ -137,6 +138,12 @@ def bootstrap(p: DeployProfile, force: bool = False, log=print) -> dict[str, str
         run_stage(s, log)
         state[s.name] = keys[s.name]
         STATE_FILE.write_text(json.dumps(state, indent=2))
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+    # The fault classifier fits its signatures lazily from the feature store and caches them; do it now so
+    # a read-only or offline machine never has to.
+    from skinflow_discard_optimizer.aware.fault_id import FaultClassifier
+
+    FaultClassifier()
     return status(p)
 
 

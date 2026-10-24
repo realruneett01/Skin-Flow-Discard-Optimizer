@@ -5,6 +5,9 @@
     skdo configure --press-id Press07 --namespace 3 [--endpoint opc.tcp://host:4840] [--tag name=Ident ...]
     skdo bootstrap [--force]    build or refresh models for this host and config
     skdo doctor                 verify the install; exit 1 on failure
+    skdo preflight [--endpoint URL]   the deployment gate: install, models, OPC-UA loopback, press commissioning
+    skdo simulate-press         serve a simulated press over OPC-UA (no hardware needed)
+    skdo bundle OUT --target cp312-win_amd64 ...   build a plug-and-run USB folder
 """
 from __future__ import annotations
 
@@ -26,7 +29,7 @@ def _profile():
     from skinflow_discard_optimizer.deploy.profile import build_profile
 
     facts = probe()
-    return facts, build_profile(facts)
+    return facts, build_profile(facts, sticky=True)
 
 
 def cmd_probe(args) -> int:
@@ -153,8 +156,64 @@ def cmd_doctor(args) -> int:
     return 1 if any(s == "FAIL" for _, s, _ in results) else 0
 
 
+def _endpoint(args) -> str:
+    from skinflow_discard_optimizer.deploy.site import SiteConfig
+
+    return getattr(args, "endpoint", None) or os.environ.get("SKDO_OPCUA_ENDPOINT") or SiteConfig.load().opcua_endpoint
+
+
+def cmd_preflight(args) -> int:
+    from skinflow_discard_optimizer.deploy import preflight
+
+    res = preflight.run(endpoint=_endpoint(args), commission_s=args.seconds, loopback=not args.no_loopback)
+    width = max(len(c.name) for c in res.checks)
+    for c in res.checks:
+        print(f"{c.status:>4}  {c.name:<{width}}  {c.detail}")
+    print("\nPREFLIGHT " + ("PASSED" if res.passed else "FAILED - the service will not start on this machine"))
+    return 0 if res.passed else 1
+
+
+def cmd_simulate_press(args) -> int:
+    import asyncio
+
+    from skinflow_discard_optimizer.contracts.schema import load_contract
+    from skinflow_discard_optimizer.service.sim_press import serve_press
+
+    print(f"simulated press on {args.listen} (Ctrl+C to stop)")
+    try:
+        asyncio.run(serve_press(load_contract(), args.listen, cycles=args.cycles, pace=args.pace))
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def cmd_verify_bundle(args) -> int:
+    from pathlib import Path
+
+    from skinflow_discard_optimizer.deploy.bundle import verify_manifest
+
+    problems = verify_manifest(Path(args.root))
+    if problems:
+        print("BUNDLE INTEGRITY CHECK FAILED - refusing to start:", file=sys.stderr)
+        for p in problems[:20]:
+            print("  " + p, file=sys.stderr)
+        return 1
+    print("[verify] bundle intact")
+    return 0
+
+
+def cmd_bundle(args) -> int:
+    from pathlib import Path
+
+    from skinflow_discard_optimizer.deploy.bundle import build_bundle
+
+    build_bundle(Path(args.out), args.target, with_artifacts=not args.no_artifacts, embed_python=args.embed_python)
+    return 0
+
+
 def cmd_up(args) -> int:
     from skinflow_discard_optimizer.deploy import bootstrap as bs
+    from skinflow_discard_optimizer.deploy import preflight
     from skinflow_discard_optimizer.deploy.site import SITE_FILE, SiteConfig, write_site_contract
 
     # 1. site: honour SKDO_PRESS_ID / SKDO_OPCUA_NAMESPACE / SKDO_OPCUA_ENDPOINT when no site file exists yet.
@@ -165,7 +224,7 @@ def cmd_up(args) -> int:
         cfg.save()
         os.environ["SKDO_SIGNALS_YAML"] = str(write_site_contract(cfg))
         print(f"[up] site configured from environment: press={cfg.press_id} ns={cfg.namespace_index}", flush=True)
-    # 2. host -> profile -> models
+    # 2. host -> profile -> models (prebuilt artifacts on a USB stick are used as they are)
     facts, prof = _profile()
     print(f"[up] {facts.cpu_count} cores, {facts.ram_gb} GB, gpu={facts.gpu_names or 'none'} -> {', '.join(prof.reasons)}",
           flush=True)
@@ -173,11 +232,42 @@ def cmd_up(args) -> int:
     if not all(v == "done" for v in final.values()):
         print(f"[up] bootstrap incomplete: {final}", file=sys.stderr)
         return 1
-    # 3. prove it works, then hand over to the service
-    h = bs.smoke_test(3)
-    print(f"[up] smoke test: {h['status']} cuts_mm={h['cuts_mm']}", flush=True)
+    # 3. the gate: must have passed on this machine with this exact config and these models
+    ok, why = preflight.is_current()
+    if not ok:
+        print(f"[up] {why}; running preflight", flush=True)
+        res = preflight.run(endpoint=_endpoint(args), loopback=not args.skip_loopback)
+        for c in res.checks:
+            print(f"[preflight] {c.status:>4}  {c.name}: {c.detail}", flush=True)
+        if not res.passed:
+            print("[up] preflight FAILED - not starting. Fix the FAIL lines above (see `skdo preflight`).", file=sys.stderr)
+            return 1
+    else:
+        print(f"[up] preflight {why}", flush=True)
     if args.no_run:
         return 0
+    # 4. run: live press if an endpoint is configured and no explicit mock/replay was requested
+    endpoint = _endpoint(args)
+    if endpoint and not {"--mock", "--replay"} & set(args.service_args):
+        import asyncio
+        import logging
+
+        from skinflow_discard_optimizer.contracts.schema import load_contract
+        from skinflow_discard_optimizer.service.opcua_source import LiveRunner
+        from skinflow_discard_optimizer.service.run import ServiceConfig, StreamingOptimizerService
+
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        svc = StreamingOptimizerService(ServiceConfig(latency_budget_ms=prof.latency_budget_ms))
+        runner = LiveRunner(svc, load_contract(), endpoint, serve=args.serve)
+        try:
+            asyncio.run(runner.run())
+        except KeyboardInterrupt:
+            pass
+        return 0
+    if not {"--mock", "--replay"} & set(args.service_args):
+        print("[up] nothing to read from: no OPC-UA endpoint is configured. Set SKDO_OPCUA_ENDPOINT, pass --endpoint, run "
+              "`skdo configure --endpoint ...`, or demo with `skdo up -- --mock --mock-cycles 20`.", file=sys.stderr)
+        return 2
     from skinflow_discard_optimizer.service import run as service
 
     sys.argv = ["skinflow-service", "--budget-ms", str(prof.latency_budget_ms), *args.service_args]
@@ -207,8 +297,35 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--quick", action="store_true", help="skip the smoke test (for container health checks)")
     d.set_defaults(fn=cmd_doctor)
 
-    u = sub.add_parser("up", help="configure, bootstrap, smoke test, run")
-    u.add_argument("--no-run", action="store_true", help="stop after the smoke test")
+    pf = sub.add_parser("preflight", help="deployment gate; exit 1 if this machine must not run the service")
+    pf.add_argument("--endpoint", help="press OPC-UA endpoint (default: site config)")
+    pf.add_argument("--seconds", type=float, default=20.0, help="commissioning listen time")
+    pf.add_argument("--no-loopback", action="store_true", help="skip the simulated-press OPC-UA loopback")
+    pf.set_defaults(fn=cmd_preflight)
+
+    sp = sub.add_parser("simulate-press", help="serve a simulated press over OPC-UA")
+    sp.add_argument("--listen", default="opc.tcp://0.0.0.0:4842/press")
+    sp.add_argument("--cycles", type=int, default=3)
+    sp.add_argument("--pace", type=float, default=0.0, help="wall seconds per simulated second (0 = fast)")
+    sp.set_defaults(fn=cmd_simulate_press)
+
+    bd = sub.add_parser("bundle", help="build a plug-and-run USB folder")
+    bd.add_argument("out")
+    bd.add_argument("--target", action="append", required=True, metavar="cpXYZ-PLATFORM",
+                    help="e.g. cp312-win_amd64, cp312-linux_x86_64, cp312-linux_aarch64, cp312-macos_arm64")
+    bd.add_argument("--no-artifacts", action="store_true", help="do not copy prebuilt models (built on first run instead)")
+    bd.add_argument("--embed-python", metavar="ZIP", help="Windows embeddable Python zip to bundle (no install needed)")
+    bd.set_defaults(fn=cmd_bundle)
+
+    vb = sub.add_parser("verify-bundle", help="check a USB bundle against its MANIFEST.sha256")
+    vb.add_argument("root")
+    vb.set_defaults(fn=cmd_verify_bundle)
+
+    u = sub.add_parser("up", help="configure, bootstrap, preflight gate, run")
+    u.add_argument("--endpoint", help="press OPC-UA endpoint (default: site config)")
+    u.add_argument("--serve", default="opc.tcp://0.0.0.0:4841/skdo", help="where the read-only Predictor.* server listens")
+    u.add_argument("--skip-loopback", action="store_true")
+    u.add_argument("--no-run", action="store_true", help="stop after the preflight gate")
     u.add_argument("service_args", nargs=argparse.REMAINDER, help="passed to the service (e.g. --mock --mock-cycles 100)")
     u.set_defaults(fn=cmd_up)
 

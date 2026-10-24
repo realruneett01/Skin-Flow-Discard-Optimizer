@@ -7,7 +7,7 @@ name = "skinflow-discard-optimizer"
 version = "0.1.0"
 description = "Skin-Flow Discard Optimizer: third module of the Press Value Platform (advisory discard-cut recommendations for aluminium extrusion presses)."
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = { file = "LICENSE" }   # proprietary, all rights reserved
 classifiers = ["Private :: Do Not Upload", "License :: Other/Proprietary License"]
 dependencies = [
     "numpy>=2.0",
@@ -18,6 +18,7 @@ dependencies = [
     "pyyaml>=6.0",
     "matplotlib>=3.8",
     "tabulate>=0.9",
+    "asyncua>=1.1",
 ]
 
 [project.scripts]

@@ -8,7 +8,7 @@ User=skdo
 Group=skdo
 WorkingDirectory=/opt/skdo/app
 EnvironmentFile=-/etc/skdo/skdo.env
-ExecStart=/opt/skdo/venv/bin/skdo up -- --mock --mock-cycles 20
+ExecStart=/opt/skdo/venv/bin/skdo up
 Restart=on-failure
 RestartSec=10
 # Bootstrap can take a long time on first start.
