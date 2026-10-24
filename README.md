@@ -597,10 +597,19 @@ python -m skinflow_discard_optimizer.eval.stress
 python -m skinflow_discard_optimizer.service.replay
 ```
 
-**Run the streaming service — live OPC-UA mode:**
+**Run the streaming service — simulated stream:**
 ```bash
-python -m skinflow_discard_optimizer.service.run
+python -m skinflow_discard_optimizer.service.run --mock --mock-cycles 50
 ```
+
+> The service currently ingests the digital-twin stream (`--mock`) or a recorded parquet file (`--replay`).
+> A live OPC-UA subscriber is not part of this repository yet.
+
+**Deploy on a machine (auto-detects hardware, configures the press, builds models, runs):**
+```bash
+pip install -e . && skdo up -- --mock --mock-cycles 50      # or: docker compose up -d
+```
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). What is proprietary here: [`docs/PROPRIETARY_TECHNOLOGY.md`](docs/PROPRIETARY_TECHNOLOGY.md).
 
 ---
 

@@ -1,0 +1,22 @@
+[Unit]
+Description=Skin-Flow Discard Optimizer (advisory)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=skdo
+Group=skdo
+WorkingDirectory=/opt/skdo/app
+EnvironmentFile=-/etc/skdo/skdo.env
+ExecStart=/opt/skdo/venv/bin/skdo up -- --mock --mock-cycles 20
+Restart=on-failure
+RestartSec=10
+# Bootstrap can take a long time on first start.
+TimeoutStartSec=infinity
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/skdo/app
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

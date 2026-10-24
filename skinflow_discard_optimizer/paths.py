@@ -1,4 +1,5 @@
 """Filesystem locations shared by every subpackage."""
+import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -9,7 +10,8 @@ REPORTS_DIR = REPO_ROOT / "reports"
 DOCS_DIR = REPO_ROOT / "docs"
 ARTIFACTS_DIR = REPO_ROOT / "artifacts"
 
-SIGNALS_YAML = CONTRACTS_DIR / "signals.yaml"
+# A site-specific contract (see ``skdo configure``) replaces the shipped one when this is set.
+SIGNALS_YAML = Path(os.environ.get("SKDO_SIGNALS_YAML") or CONTRACTS_DIR / "signals.yaml")
 
 
 def default_workers(cap: int = 8) -> int:

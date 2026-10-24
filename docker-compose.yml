@@ -1,0 +1,21 @@
+# docker compose up                      CPU
+# docker compose --profile gpu up skdo-gpu   NVIDIA GPU host (needs nvidia-container-toolkit)
+services:
+  skdo:
+    build: .
+    image: skdo:latest
+    restart: unless-stopped
+    env_file: [{ path: deploy/skdo.env, required: false }]
+    volumes: [artifacts:/app/artifacts, data:/app/data, site:/app/site]
+  skdo-gpu:
+    profiles: [gpu]
+    build: { context: ., args: { EXTRAS: gpu } }
+    image: skdo:gpu
+    restart: unless-stopped
+    env_file: [{ path: deploy/skdo.env, required: false }]
+    volumes: [artifacts:/app/artifacts, data:/app/data, site:/app/site]
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+volumes: { artifacts: {}, data: {}, site: {} }

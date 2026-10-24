@@ -365,7 +365,9 @@ def main(*args, **kwargs) -> None:
         n_cal = len(cal_scores)
     else:
         prior, onset, _ = train(df, n_train, gpu=gpu)
-        val = df[df.split == "val"].sample(n=n_cal, random_state=1)
+        val_pool = df[df.split == "val"]
+        n_cal = min(n_cal, len(val_pool))  # small (scaled-down) datasets have a small val split
+        val = val_pool.sample(n=n_cal, random_state=1)
         if gpu:
             cal_scores = _cal_scores_gpu(prior, onset, val)
         else:

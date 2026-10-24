@@ -39,3 +39,6 @@ package.json
 package-lock.json
 lefthook.yml
 biome.json
+
+# Per-press site config (endpoints, tag overrides) and generated contract
+site/

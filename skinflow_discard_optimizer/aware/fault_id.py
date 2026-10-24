@@ -16,6 +16,7 @@ each signature explains recent process features and residuals.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -203,6 +204,14 @@ def _compute_posteriors(
     return posteriors, log_liks
 
 
+def _dataset_scale() -> float:
+    """Fraction of the full scenario length the simulation dataset was built at (1.0 when unknown)."""
+    try:
+        return float(json.loads((REPO_ROOT / "data" / "dataset" / "manifest.json").read_text())["scale"])
+    except (OSError, KeyError, ValueError):
+        return 1.0
+
+
 class FaultClassifier:
     """Bayesian multivariate fault classifier with reject option for novel anomalies."""
 
@@ -238,12 +247,13 @@ class FaultClassifier:
         ]
 
         var_floor = np.array([1e-3, 1e-4, 1e-4, 1.0, 1.0, 0.5, 0.5, 1e8, 1e8, 1e8, 0.05, 1.0])
+        scale = _dataset_scale()  # cycle windows above are for the full-size dataset
         for sc_name, f_class, c_lo, c_hi in sc_map:
             p = data_dir / f"{sc_name}.parquet"
             if not p.exists():
                 continue
             df = pd.read_parquet(p)
-            sub = df[(df.cycle >= c_lo) & (df.cycle < c_hi)]
+            sub = df[(df.cycle >= int(c_lo * scale)) & (df.cycle < int(c_hi * scale))]
             x_df = sub[list(DEFAULT_FEATURE_COLS)].copy()
             x_df["fpca_spe"] = np.log10(np.maximum(x_df["fpca_spe"], 1.0))
             x_df["theta_F_tool_N"] = x_df["theta_F_tool_N"] * 1e-6

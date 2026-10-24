@@ -44,6 +44,7 @@ def evaluate_healthy_far(
         raise FileNotFoundError(f"Missing {healthy_file}")
 
     df_healthy = pd.read_parquet(healthy_file)
+    n_train = min(n_train, len(df_healthy) // 2)  # scaled-down datasets (deploy tiers) are shorter than 32k rows
     train_df = df_healthy.iloc[:n_train].copy()
     test_df = df_healthy.iloc[n_train:].copy()
 
@@ -191,7 +192,21 @@ Evaluated across all 9 injected fault scenarios:
     return report
 
 
+def fit_only() -> None:
+    """Calibrate and save ``artifacts/monitor_config.npz`` without the fault-scenario evaluation.
+
+    The fault evaluation uses onset cycles of the full-size scenarios, so it is only meaningful there;
+    ``skdo bootstrap`` needs just the calibration.
+    """
+    _, far = evaluate_healthy_far()
+    print(f"Saved monitor_config.npz (held-out FAR {far['far_per_1000']:.2f} per 1000 cycles over {far['n_test_cycles']} cycles)")
+
+
 def main() -> None:
+    import sys
+
+    if "--fit-only" in sys.argv[1:]:
+        return fit_only()
     print("Evaluating Task 4.2 Multivariate Monitoring...")
     monitor, far_results = evaluate_healthy_far()
     fault_results = evaluate_fault_scenarios(monitor)
