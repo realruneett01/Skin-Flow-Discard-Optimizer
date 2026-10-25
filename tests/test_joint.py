@@ -1,5 +1,4 @@
 """Unit tests for Task 3.4 joint objective (discard cut coupled with dead-cycle time and energy)."""
-import numpy as np
 import pytest
 
 from skinflow_discard_optimizer.core.joint import (

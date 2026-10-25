@@ -6,7 +6,6 @@ import pytest
 
 from skinflow_discard_optimizer.core.safety import (
     CutCandidate,
-    GuardedDecision,
     SafetyConfig,
     SafetyGate,
     StrokeTelemetry,

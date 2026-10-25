@@ -140,7 +140,7 @@ def main(n_tune: int = 8, n_eval: int = 60, block: int = 20) -> None:
           f"{ev[f'sd_{nm}_60'].mean():.4g} | {np.sqrt((ev[f'errnom_{nm}_60'] ** 2).mean()):.4g} |"
           for nm in STATE_NAMES],
         "",
-        f"z-score coverage at 60% (share of strokes with |error| <= 2 sd): "
+        "z-score coverage at 60% (share of strokes with |error| <= 2 sd): "
         + ", ".join(f"{nm} {np.mean(np.abs(ev[f'err_{nm}_60']) <= 2 * ev[f'sd_{nm}_60']) * 100:.0f}%"
                     for nm in STATE_NAMES),
         "",

@@ -84,7 +84,7 @@ def _embed_python(zip_path: Path, out: Path, targets: list[str]) -> None:
     pth = next(dest.glob("python*._pth"))
     lines = [ln for ln in pth.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
     # An embeddable Python ignores PYTHONPATH when a ._pth file exists, so the paths go here.
-    lines += [f"..\\..\\app", f"..\\..\\lib\\{win[0]}", "import site"]
+    lines += ["..\\..\\app", f"..\\..\\lib\\{win[0]}", "import site"]
     pth.write_text("\n".join(dict.fromkeys(lines)) + "\n")
 
 
@@ -228,7 +228,7 @@ Built for: {targets}
    (the press address is remembered in app/site/site.yaml after `skdo configure`).
 
 The service is ADVISORY ONLY. It reads press tags and publishes read-only Predictor.* tags on
-opc.tcp://<this computer>:4841/skdo. It never writes to the press.
+opc.tcp://127.0.0.1:4841/skdo (see docs/DEPLOYMENT.md#security to expose it). It never writes to the press.
 
 If preflight FAILS the service does not start. Read the FAIL lines.
 Nothing is installed on the computer; all state is under app/ on this stick.

@@ -11,13 +11,17 @@ models if they are missing, runs the preflight gate, and only then starts. If th
 
 | Path | Built | Run end to end |
 |---|---|---|
-| Linux x86_64, venv or USB bundle | yes | **yes** (development sandbox) |
-| OPC-UA subscribe -> decide -> publish, against the **simulated** press | yes | **yes**; cuts equal the direct-replay cuts |
+| Linux x86_64 (Python 3.11, 3.12, 3.13): install, test suite | yes | **yes**, ~4,400 tests per Python version in clean virtual environments |
+| Linux x86_64, USB bundle (libraries loaded from the stick, tamper check) | yes | **yes** |
+| `skdo up` live against the **simulated** press, `Predictor.*` read back over OPC-UA by a client | yes | **yes** |
+| Encrypted + authenticated OPC-UA, link-loss recovery | yes | **yes**, against the simulated press |
+| First start from nothing (fresh venv, same steps as the Dockerfile layers): build models, preflight, run | yes | **yes** (8 min at the `standard` tier on 4 cores) |
 | OPC-UA against a **real** PLC | yes | **no** |
 | Windows, Linux ARM64, macOS bundles | yes (wheels resolve for cp312 win_amd64 / linux_aarch64 / macos_arm64) | **no**, see `docs/VERIFY_ON_TARGETS.md` |
-| Docker (CPU, GPU), docker compose | yes | **no** (no Docker daemon was available) |
-| systemd unit, `deploy/install.sh` | yes | install.sh ran into a venv; the **unit was never started** |
-| GitHub Actions workflow | yes | **no** |
+| Docker image build and run, docker compose | yes | **no** (no Docker daemon was available; only the Dockerfile's install steps were replayed in a venv) |
+| systemd unit | yes | syntax checked with `systemd-analyze verify` (the only complaint was that the binary does not exist on the build machine); **never started** |
+| CUDA GPU path | yes | **no** (no GPU; the CPU-torch version of the GPU engine is tested) |
+| GitHub Actions workflow | yes | **no** (YAML parses; it has never run) |
 
 ## USB stick
 
@@ -92,18 +96,41 @@ and PLACEHOLDER parameters.
 Overrides: `SKDO_TIER`, `SKDO_WORKERS`, `SKDO_DEVICE`, `SKDO_DATASET_SCALE`, `SKDO_LATENCY_BUDGET_MS`,
 `SKDO_OPCUA_USER`/`SKDO_OPCUA_PASSWORD` (client username auth).
 
+## Security
+
+- The service hosts a **read-only** `Predictor.*` OPC-UA server, by default on `opc.tcp://127.0.0.1:4841/skdo`.
+  It refuses to bind a routable address unless it is encrypted: create a certificate with `skdo gen-cert`, then set
+  `SKDO_SERVE_CERT` and `SKDO_SERVE_KEY` (Basic256Sha256 SignAndEncrypt). Add `SKDO_SERVE_USER` and
+  `SKDO_SERVE_PASSWORD` to require a login (anonymous access is then refused). `SKDO_ALLOW_INSECURE=1` overrides, for an isolated network only.
+- The connection **to the press** is encrypted when `SKDO_OPCUA_CERT`, `SKDO_OPCUA_KEY` and `SKDO_OPCUA_SERVER_CERT`
+  are set (trust the certificate on the press server too); otherwise a warning is logged. `SKDO_OPCUA_USER`/`SKDO_OPCUA_PASSWORD` add a login.
+- Covered by tests (`tests/test_opcua_security.py`): encrypted and authenticated round trip, wrong password rejected,
+  anonymous rejected, unencrypted client rejected, clients cannot write.
+- Not covered: certificate expiry and rotation, trust-list management, and interoperability with a specific PLC vendor's OPC-UA server.
+
+## Behaviour when things go wrong
+
+- A cycle with corrupt telemetry, an unsupported alloy/temperature, a stroke that stops short of the decision region,
+  a bad billet length, or missing models gets the **static 40 mm cut**, with the reasons logged and published as
+  `Predictor.CutConfidence = fallback`. It does not reach the drift monitor.
+- An unexpected exception in the decision engine is logged with its traceback and handled the same way (`ENGINE_ERROR`).
+  One bad cycle never stops the service.
+- A press server that sends wrong types or garbage has those values counted (`LiveRunner.bad_values`) and dropped.
+- If no data arrives for 30 s and the link is dead, the service drops the half-assembled cycle and reconnects.
+- `Predictor.CutIntervalLowMm/HighMm` are the calibrated conformal interval on the **critical thickness**, not on the cut. The
+  cost-optimal cut normally sits above that interval by design.
+
 ## Limits you should know about
 
 - **Everything is built from a digital twin with PLACEHOLDER parameters** until calibrated on real force curves.
   A passing preflight means the software is installed and wired correctly, not that its cuts are right for your press.
-- **OPC-UA security is `None` by default** on both sides. Put the machine on the control network behind a firewall, or
-  extend `service/opcua_source.py` with certificates before connecting it to anything that matters. The `Predictor.*`
-  server is read-only for clients but unauthenticated.
-- **1 kHz delivery over OPC-UA depends on the press server.** Commissioning reports the observed rates; if the PLC
-  cannot deliver, the cut decision has less data.
+- **Only a simulated press has been used** to test the OPC-UA path. A real PLC's sampling limits, quality codes and
+  vendor quirks are untested.
+- **1 kHz delivery over OPC-UA depends on the press server.** Commissioning reports the observed rates.
 - **Smaller tiers give less-validated models.** Coverage and backtest numbers come from the full tier. For real presses,
   build once on a `full` host and ship the models (USB bundle).
-- **Latency:** the full service path measured 240-360 ms per cycle on a 4-vCPU Linux host (budget 200 ms). The first cycle
-  after start is slower (seconds). The budget only produces a warning; the cut is still published.
+- **Latency:** on a 4-vCPU Linux host the full decision path measured a median of about 140 ms and a p99 of about
+  195 ms against the 200 ms budget (after the optimisations in this repository). That is a margin of a few percent: a slower CPU
+  will exceed it. The budget only produces a warning; the cut is still published. The first cycle after start is slower.
 - The bundle verifies integrity, it does not authenticate the author (no signature). Treat the stick as you treat any
   executable media.

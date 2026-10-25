@@ -8,12 +8,20 @@ import pytest
 from skinflow_discard_optimizer.aware.fault_id import (
     ALL_FAULT_CLASSES,
     KNOWN_FAULTS,
-    SUGGESTED_CHECKS,
     FaultClassifier,
     FaultDiagnosis,
     FaultSignatures,
 )
 from skinflow_discard_optimizer.paths import REPO_ROOT
+
+
+def _dataset_scale() -> float:
+    import json
+
+    try:
+        return float(json.loads((REPO_ROOT / "data" / "dataset" / "manifest.json").read_text())["scale"])
+    except (OSError, KeyError, ValueError):
+        return 1.0
 
 
 HEALTHY_FEATS: dict[str, float] = {
@@ -81,6 +89,9 @@ def test_classify_healthy_cycle(classifier: FaultClassifier):
 def test_classify_known_fault_scenarios(classifier: FaultClassifier, case: tuple):
     scenario, cycle, expected_fault, expected_keyword = case
     df = pd.read_parquet(REPO_ROOT / "data" / "features" / f"{scenario}.parquet")
+    # The cycle numbers are for the full-size dataset; scaled-down builds (deploy tiers) shift and thin them.
+    target = cycle * _dataset_scale()
+    cycle = int(df.cycle.iloc[(df.cycle - target).abs().argmin()])
     feats: dict[str, Any] = df[df.cycle == cycle].iloc[0].to_dict()
     diag = classifier.classify(cycle=cycle, features=feats)
     assert diag.confidence > 0.50

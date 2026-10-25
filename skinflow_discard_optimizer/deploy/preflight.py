@@ -84,7 +84,7 @@ def _free_port() -> int:
 
 async def _loopback(contract) -> tuple[float, float, bool]:
     """Returns (live_cut_mm, replay_cut_mm, nodes_read_only)."""
-    from asyncua import Client, ua
+    from asyncua import Client
 
     from skinflow_discard_optimizer.service.opcua_source import LiveRunner
     from skinflow_discard_optimizer.service.run import StreamingOptimizerService

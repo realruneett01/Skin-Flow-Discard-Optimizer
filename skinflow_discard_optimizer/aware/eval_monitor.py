@@ -11,10 +11,8 @@ Writes ``reports/task_4_2_monitor.md``.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from skinflow_discard_optimizer.aware.monitor import MultivariateMonitor

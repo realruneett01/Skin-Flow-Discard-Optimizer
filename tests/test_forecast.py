@@ -8,17 +8,14 @@ import torch
 from skinflow_discard_optimizer.aware.forecast import (
     DEFAULT_LIMITS,
     Forecaster,
-    ForecastResult,
     ResidualTCN,
     _compute_ttl_metric,
     _propagate_single_step,
 )
 from skinflow_discard_optimizer.aware.state_tracker import (
     LatentWearTracker,
-    Regime,
     TrackerConfig,
 )
-from skinflow_discard_optimizer.sim.defect_model import DefectModel
 
 
 @pytest.fixture

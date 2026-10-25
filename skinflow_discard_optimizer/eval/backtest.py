@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 
 from skinflow_discard_optimizer.aware.monitor import MonitorConfig, MultivariateMonitor
-from skinflow_discard_optimizer.config import Economics, load_economics
+from skinflow_discard_optimizer.config import load_economics
 from skinflow_discard_optimizer.paths import ARTIFACTS_DIR, DATA_DIR, REPO_ROOT, REPORTS_DIR
 from skinflow_discard_optimizer.sim.build_dataset import HELD_OUT_SCENARIOS
 from skinflow_discard_optimizer.sim.defect_model import DefectModel
@@ -111,8 +111,11 @@ def evaluate_false_alarm_rate(
         raise FileNotFoundError(f"Missing healthy feature file: {healthy_path}")
 
     df_healthy = pd.read_parquet(healthy_path)
+    n_healthy_train = min(n_healthy_train, len(df_healthy) // 2)   # same split rule as aware/eval_monitor.py
     test_df = df_healthy.iloc[n_healthy_train:].copy()
     n_test = len(test_df)
+    if n_test == 0:
+        raise ValueError(f"{healthy_path} has too few healthy cycles ({len(df_healthy)}) for a held-out false-alarm test")
 
     res = monitor.run_dataframe(test_df)
     alarms = res["is_alarm"].to_numpy().astype(int)
@@ -132,6 +135,14 @@ def evaluate_false_alarm_rate(
     ci_low = float(np.percentile(boot_rates, 2.5))
     ci_high = float(np.percentile(boot_rates, 97.5))
     return point_far, ci_low, ci_high, total_alarms, n_test
+
+
+def _dataset_scale() -> float:
+    """Fraction of full scenario length the dataset was built at (1.0 when unknown)."""
+    try:
+        return float(json.loads((DATA_DIR / "dataset" / "manifest.json").read_text())["scale"])
+    except (OSError, KeyError, ValueError):
+        return 1.0
 
 
 def _extract_first_alarm(res: pd.DataFrame, onset: int) -> tuple[int, str]:
@@ -158,6 +169,7 @@ def _eval_single_fault(
     spec: tuple[str, int, float],
 ) -> FaultLeadTimeMetric:
     sc_name, onset, limit_h = spec
+    onset = int(onset * _dataset_scale())      # onsets are for the full-size dataset
     feat_df = pd.read_parquet(feat_path)
     res = monitor.run_dataframe(feat_df)
     first_alarm, channel = _extract_first_alarm(res, onset)

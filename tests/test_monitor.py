@@ -6,7 +6,6 @@ import pandas as pd
 import pytest
 
 from skinflow_discard_optimizer.aware.monitor import (
-    DEFAULT_CROSS_COLS,
     DEFAULT_FPCA_COLS,
     Attribution,
     CycleMonitorResult,

@@ -27,7 +27,7 @@ Verification notes (plan rule 7, also in docs/assumptions.md):
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Callable, Literal
+from typing import Any, Literal
 
 import numpy as np
 
@@ -218,7 +218,7 @@ def billet_temperature_K(x_mm, spec: StrokeSpec):
 
 # --------------------------------------------------------------------------- L2: force curve
 
-def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, any]]) -> dict:
+def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, Any]]) -> dict:
     res = {}
     for i, (k, default) in enumerate(spec):
         if i < len(args):

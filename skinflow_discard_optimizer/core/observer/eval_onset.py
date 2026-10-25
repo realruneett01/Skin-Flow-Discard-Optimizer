@@ -19,7 +19,6 @@ means the alarm came *before* the ram reached the onset.
 from __future__ import annotations
 
 import argparse
-import os
 from concurrent.futures import ProcessPoolExecutor
 
 import matplotlib

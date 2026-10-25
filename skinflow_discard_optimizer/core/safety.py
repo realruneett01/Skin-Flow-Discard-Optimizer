@@ -122,6 +122,15 @@ def _check_arrays_health(x_mm: np.ndarray, p_cap: np.ndarray, p_rod: np.ndarray,
     return issues
 
 
+def _check_position_monotone(x_mm: np.ndarray) -> list[str]:
+    """Ram position advances during the stroke; a scrambled or reversed series is corrupt even if every value is in range."""
+    if len(x_mm) < 3 or not np.all(np.isfinite(x_mm)) or float(np.var(x_mm)) <= 0.0:
+        return []                                    # missing / frozen data is reported by the other checks
+    if float(np.corrcoef(np.arange(len(x_mm)), x_mm)[0, 1]) < 0.95:
+        return ["POSITION_NOT_MONOTONE: ram position does not advance with time"]
+    return []
+
+
 def _check_physical_ranges(x_mm: np.ndarray, p_cap: np.ndarray, p_rod: np.ndarray) -> list[str]:
     issues: list[str] = []
     if np.any(x_mm < -1.0) or np.any(x_mm > 1500.0):
@@ -178,6 +187,7 @@ class SafetyGate:
                 self.cfg.min_pressure_variance_bar,
             )
         )
+        issues.extend(_check_position_monotone(telemetry.x_mm))
         issues.extend(_check_physical_ranges(telemetry.x_mm, telemetry.p_cap_bar, telemetry.p_rod_bar))
         return issues
 

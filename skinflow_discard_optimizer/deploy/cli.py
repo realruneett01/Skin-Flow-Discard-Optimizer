@@ -202,6 +202,18 @@ def cmd_verify_bundle(args) -> int:
     return 0
 
 
+def cmd_gen_cert(args) -> int:
+    import asyncio
+    from pathlib import Path
+
+    from skinflow_discard_optimizer.service.opcua_security import generate_certificate
+
+    cert, key = asyncio.run(generate_certificate(Path(args.out), args.name, args.host, f"urn:{args.host}:skdo:{args.name}"))
+    print(f"wrote {cert} and {key}\nserver: SKDO_SERVE_CERT={cert} SKDO_SERVE_KEY={key}\n"
+          f"client of the press: SKDO_OPCUA_CERT={cert} SKDO_OPCUA_KEY={key} (and trust it on the press server)")
+    return 0
+
+
 def cmd_bundle(args) -> int:
     from pathlib import Path
 
@@ -304,10 +316,16 @@ def main(argv: list[str] | None = None) -> int:
     pf.set_defaults(fn=cmd_preflight)
 
     sp = sub.add_parser("simulate-press", help="serve a simulated press over OPC-UA")
-    sp.add_argument("--listen", default="opc.tcp://0.0.0.0:4842/press")
-    sp.add_argument("--cycles", type=int, default=3)
+    sp.add_argument("--listen", default="opc.tcp://127.0.0.1:4842/press")
+    sp.add_argument("--cycles", type=int, default=0, help="cycles to play once; 0 = repeat forever")
     sp.add_argument("--pace", type=float, default=0.0, help="wall seconds per simulated second (0 = fast)")
     sp.set_defaults(fn=cmd_simulate_press)
+
+    gc = sub.add_parser("gen-cert", help="create a self-signed OPC-UA certificate and key")
+    gc.add_argument("--out", default="site/certs")
+    gc.add_argument("--name", default="skdo")
+    gc.add_argument("--host", default="localhost", help="host name the certificate is for")
+    gc.set_defaults(fn=cmd_gen_cert)
 
     bd = sub.add_parser("bundle", help="build a plug-and-run USB folder")
     bd.add_argument("out")
@@ -323,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
 
     u = sub.add_parser("up", help="configure, bootstrap, preflight gate, run")
     u.add_argument("--endpoint", help="press OPC-UA endpoint (default: site config)")
-    u.add_argument("--serve", default="opc.tcp://0.0.0.0:4841/skdo", help="where the read-only Predictor.* server listens")
+    u.add_argument("--serve", default="opc.tcp://127.0.0.1:4841/skdo", help="where the read-only Predictor.* server listens (non-loopback needs SKDO_SERVE_CERT/KEY)")
     u.add_argument("--skip-loopback", action="store_true")
     u.add_argument("--no-run", action="store_true", help="stop after the preflight gate")
     u.add_argument("service_args", nargs=argparse.REMAINDER, help="passed to the service (e.g. --mock --mock-cycles 100)")

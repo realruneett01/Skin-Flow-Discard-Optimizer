@@ -28,8 +28,8 @@
 > | ✅ **Exists and is tested here** | the decision pipeline, safety gate, digital twin, backtest, deploy tooling (`skdo`), live OPC-UA subscriber and read-only `Predictor.*` publisher, USB bundle builder, preflight gate |
 > | ⚠️ **Simulation only** | every performance and savings number below. The models are fitted to a digital twin; **no real press data has ever been used** |
 > | ⚠️ **Placeholder inputs** | 133 of 135 parameters in `config/` are `PLACEHOLDER` (assumed, not measured) |
-> | ❌ **Not yet done** | validation on a real press; the OPC-UA path has only been run against a *simulated* press server, never a real PLC; Windows, ARM, macOS, Docker and systemd packaging are built but not run in the environment where this was developed |
-> | ⚠️ **Not reproduced** | the 15.8 ms latency figure (see the results table) |
+> | ❌ **Not yet done** | validation on a real press; the OPC-UA path has only been run against a *simulated* press server, never a real PLC; the Windows, ARM, macOS, Docker and systemd packaging, and the CUDA GPU path, are built but have not been run (see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#status-of-each-path-be-honest-about-what-has-been-run)) |
+> | ⚠️ **Not reproduced** | the 15.8 ms latency figure (see the results table). The full service path measures about 140 ms median / 195 ms p99 on a 4-vCPU Linux host |
 >
 > Advisory only: the software never writes to the press.
 
@@ -334,7 +334,7 @@ Evaluated on a **rolling-origin backtest** across **13 scenarios** (11 developme
 | False-alarm rate | **4.9 / 1,000 cycles** | [2.9, 7.4] | ≤ 5.0 / 1,000 | ✅ PASS |
 | Warning lead time (median) | **300 cycles (~7 h)** | [−29, 1,546] | median > 0 | ⚠️ median passes, but the interval includes negative lead times |
 | Conformal coverage | **91.4%** | [90.9%, 92.1%] | 90% ± 2% | ✅ PASS |
-| Cut-decision latency (median, per `eval/backtest.py`) | **15.8 ms** | — | < 200 ms | ⚠️ NOT REPRODUCED — `skdo preflight` measured 240–360 ms per cycle for the full service path on a 4-vCPU Linux host |
+| Cut-decision latency (median, per `eval/backtest.py`) | **15.8 ms** | — | < 200 ms | ⚠️ NOT REPRODUCED — the full service path (`skdo preflight`) measured ~140 ms median / ~195 ms p99 per cycle on a 4-vCPU Linux host |
 
 > [!WARNING]
 > **Defect rate ⚠️ CAUTION.** SKDO introduces a small positive defect risk by cutting closer to the skin-flow boundary. The absolute rate (0.56/1,000) is well below typical industry total-reject rates of 5–15/1,000. The CAUTION flag is deliberate transparency, not a safety failure.
@@ -568,7 +568,7 @@ Full audit in [`docs/integration_audit.md`](docs/integration_audit.md). Key conf
 | 2 | **Alloy calibration** | Only AA6063/AA6082 are calibrated; 200–500 billets/alloy needed | `core/estimator/hierarchical.py` |
 | 3 | **Defect labelling** | `h_crit` is simulated; 3–6 months of matched quality-gate records needed | `sim/defect_model.py` |
 | 4 | **OPC-UA tag mapping** | Tag names must be mapped against `contracts/signals.yaml` per press controller | `contracts/signals.yaml` |
-| 5 | **Latency verification** | The 200 ms target is **not** confirmed: the service path measured 240–360 ms per cycle on a 4-vCPU host; real OPC-UA jitter must be measured too | `service/run.py → ServiceHealth` |
+| 5 | **Latency verification** | The 200 ms target is met only narrowly (about 195 ms p99 on a 4-vCPU Linux host) and real OPC-UA jitter has not been measured | `service/run.py → ServiceHealth` |
 | 6 | **🔑 Key hypothesis** | Onset must lead h\_crit by > 0 mm on real force curves — measure this **first** | `config/press.yaml → onset_direction` |
 
 > [!CAUTION]
@@ -617,7 +617,7 @@ python -m skinflow_discard_optimizer.service.replay
 
 **Run against a simulated OPC-UA press (no hardware):**
 ```bash
-skdo simulate-press &                       # serves the press tags on opc.tcp://0.0.0.0:4842/press
+skdo simulate-press &                       # serves the press tags on opc.tcp://127.0.0.1:4842/press
 skdo up --endpoint opc.tcp://127.0.0.1:4842/press
 ```
 Real press: `skdo configure --press-id … --namespace … --endpoint opc.tcp://<plc>:4840`, then `skdo preflight`, then `skdo up`.

@@ -40,6 +40,8 @@ Consistency
 """
 from __future__ import annotations
 
+from typing import Any
+
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -137,7 +139,7 @@ class StrokeContext:
 
 # --------------------------------------------------------------------------- unscented machinery
 
-def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, any]]) -> dict:
+def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, Any]]) -> dict:
     res = {}
     for i, (k, default) in enumerate(spec):
         if i < len(args):
@@ -218,14 +220,13 @@ class UKF:
 
     def update(self, y: float, H: np.ndarray, r_var: float) -> tuple[float, float]:
         """Unscented measurement update for y = H @ phi + v. Returns (innovation, S) in N, N^2."""
-        X = _sigma_points(self.x, self.P, self.c)
-        Y = X @ (H * PHI_SCALE)
-        y_hat = self.wm @ Y
-        dY = Y - y_hat
-        S = float(self.wc @ (dY * dY)) + r_var
-        C = (self.wc * dY) @ (X - self.x)
-        K = C / S
-        nu = float(y - y_hat)
+        # The measurement is linear in phi, so the unscented update equals the Kalman update exactly (see the module
+        # docstring); computing it directly skips a Cholesky factorisation and the sigma-point algebra per sample.
+        h = np.asarray(H, float) * PHI_SCALE
+        Ph = self.P @ h
+        S = float(h @ Ph) + r_var
+        K = Ph / S
+        nu = float(y - h @ self.x)
         self.x = self.x + K * nu
         self.P = self.P - np.outer(K, K) * S
         self.P = 0.5 * (self.P + self.P.T)

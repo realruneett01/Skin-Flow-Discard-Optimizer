@@ -12,15 +12,12 @@ Writes ``reports/task_4_4_fault_id.md``.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from skinflow_discard_optimizer.aware.fault_id import (
     ALL_FAULT_CLASSES,
-    KNOWN_FAULTS,
     FaultClassifier,
 )
 from skinflow_discard_optimizer.paths import REPO_ROOT, REPORTS_DIR

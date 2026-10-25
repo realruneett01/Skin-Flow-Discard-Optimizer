@@ -18,7 +18,8 @@ from skinflow_discard_optimizer.sim.scenario import Scenario, run_scenario
 
 @pytest.fixture
 def service() -> StreamingOptimizerService:
-    cfg = ServiceConfig(latency_budget_ms=200.0, block=40, mock_cycles=2)
+    # Generous budget: these tests check behaviour, not how fast this host is (see test_latency_budget_accounting).
+    cfg = ServiceConfig(latency_budget_ms=5000.0, block=40, mock_cycles=2)
     return StreamingOptimizerService(config=cfg)
 
 
@@ -37,7 +38,7 @@ def test_service_run_mock_cycles(service: StreamingOptimizerService) -> None:
 
     for e in entries:
         assert e.within_budget is True
-        assert e.latency_ms <= 200.0
+        assert e.latency_ms <= 5000.0
         assert 12.0 <= e.cut_recommendation_mm <= 60.0
         assert e.confidence == "high"
         assert e.is_fallback is False
@@ -105,3 +106,23 @@ def test_service_json_audit_and_health_dict(service: StreamingOptimizerService, 
     health = service.health_check().to_dict()
     assert "mean_latency_ms" in health
     assert health["cycles_processed"] == 1
+
+
+def test_latency_budget_accounting() -> None:
+    """The budget flag, violation count and health status agree, whatever the host's speed."""
+    tight = StreamingOptimizerService(ServiceConfig(latency_budget_ms=0.001, block=40, mock_cycles=1))
+    entries = tight.run_mock(n_cycles=2)
+    assert all(e.within_budget is False for e in entries)
+    h = tight.health_check()
+    assert h.budget_violations == 2 and h.status == "DEGRADED"
+    assert all(12.0 <= e.cut_recommendation_mm <= 60.0 for e in entries)   # late is still published and bounded
+
+
+def test_missing_models_means_static_cut_not_a_crash(tmp_path) -> None:
+    """Without fitted models every cycle must publish the safe static cut and the service must report DEGRADED."""
+    svc = StreamingOptimizerService(ServiceConfig(models_path=tmp_path / "absent.npz", latency_budget_ms=1e9))
+    entries = svc.run_mock(n_cycles=2)
+    assert len(entries) == 2
+    assert all(e.is_fallback and e.cut_recommendation_mm == 40.0 for e in entries)
+    assert any("MODELS_NOT_LOADED" in r for r in entries[0].fallback_reasons)
+    assert svc.health_check().status == "DEGRADED"

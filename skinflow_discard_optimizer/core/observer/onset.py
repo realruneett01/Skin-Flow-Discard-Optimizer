@@ -36,10 +36,12 @@ training strokes to turn "first departure" into the defined onset position.
 """
 from __future__ import annotations
 
+from typing import Any
+
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.special import logsumexp
 
 from skinflow_discard_optimizer.core.preprocess import resample_to_position, sg_derivative
 
@@ -47,7 +49,29 @@ LAM_GRID = np.geomspace(2.5, 15.0, 64)   # fine: late in the stroke the data pin
 H_GRID = np.arange(5.0, 90.0, 0.1)
 
 
-def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, any]]) -> dict:
+def logsumexp(a, axis=None):
+    """``scipy.special.logsumexp`` for the plain float case, without scipy's per-call Python overhead.
+
+    The decision loop calls this thousands of times per stroke on small arrays, where the scipy version
+    dominated the run time. Same max-shift algorithm; ``-inf`` rows give ``-inf``, NaN propagates.
+    """
+    a = np.asarray(a, dtype=float)
+    if axis is None:                      # the hot case: one flat reduction, no keepdims bookkeeping
+        m = float(a.max()) if a.size else -math.inf
+        if not math.isfinite(m):
+            m = 0.0
+        total = float(np.exp(a - m).sum())
+        if total != total:             # NaN in, NaN out
+            return np.float64(math.nan)
+        return np.float64(m + math.log(total) if total > 0.0 else -math.inf)
+    amax = np.max(a, axis=axis, keepdims=True)
+    amax = np.where(np.isfinite(amax), amax, 0.0)
+    with np.errstate(divide="ignore"):
+        out = np.log(np.sum(np.exp(a - amax), axis=axis, keepdims=True)) + amax
+    return np.squeeze(out, axis=axis)
+
+
+def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, Any]]) -> dict:
     res = {}
     for i, (k, default) in enumerate(spec):
         if i < len(args):

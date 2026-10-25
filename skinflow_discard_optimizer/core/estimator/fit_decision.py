@@ -18,6 +18,8 @@ Writes ``artifacts/hcrit_models.npz``, ``artifacts/decision_eval.parquet`` and
 """
 from __future__ import annotations
 
+from typing import Any
+
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 
@@ -42,7 +44,7 @@ _engine: CutEngine | None = None
 
 # ---------------------------------------------------------------------------- workers
 
-def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, any]]) -> dict:
+def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, Any]]) -> dict:
     res = {}
     for i, (k, default) in enumerate(spec):
         if i < len(args):

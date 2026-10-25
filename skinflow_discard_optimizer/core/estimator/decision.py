@@ -27,11 +27,23 @@ Calibration (``AdaptiveConformal``)
 """
 from __future__ import annotations
 
+from typing import Any
+
 from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.stats import norm
+from scipy.special import ndtr, ndtri
+
+
+def _isf(q):
+    """Standard-normal inverse survival function (``scipy.stats.norm.isf`` without its per-call overhead)."""
+    return -ndtri(q)
+
+
+def _sf(z):
+    """Standard-normal survival function (``scipy.stats.norm.sf`` without its per-call overhead)."""
+    return ndtr(-np.asarray(z))
 
 from skinflow_discard_optimizer.config import load_config, value
 from skinflow_discard_optimizer.sim.defect_model import DefectModel
@@ -80,7 +92,7 @@ class DecisionSettings:
 def expected_cost(h, m, s, st: DecisionSettings):
     """Expected cost per billet of cutting at ``h`` when h_crit ~ N(m, s^2)."""
     se = st.s_eff(s)
-    return st.metal_cost_per_mm * np.asarray(h) + st.defect_cost * norm.sf((np.asarray(h) - m) / se)
+    return st.metal_cost_per_mm * np.asarray(h) + st.defect_cost * _sf((np.asarray(h) - m) / se)
 
 
 def cost_optimal_cut(m, s, st: DecisionSettings):
@@ -98,10 +110,10 @@ def cost_optimal_cut(m, s, st: DecisionSettings):
 
 def chance_constrained_cut(m, s, st: DecisionSettings):
     """Cut such that P(h_crit > h) = alpha (plan's quantile version), clipped to the bounds."""
-    return np.clip(np.asarray(m) + np.asarray(s) * norm.isf(st.chance_alpha), st.min_cut_mm, st.max_cut_mm)
+    return np.clip(np.asarray(m) + np.asarray(s) * _isf(st.chance_alpha), st.min_cut_mm, st.max_cut_mm)
 
 
-def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, any]]) -> dict:
+def _parse_named_args(args: tuple, kwargs: dict, spec: list[tuple[str, Any]]) -> dict:
     res = {}
     for i, (k, default) in enumerate(spec):
         if i < len(args):
@@ -123,7 +135,7 @@ class _BaseConformal:
         return np.asarray(m) - q * np.asarray(s), np.asarray(m) + q * np.asarray(s)
 
     def scale_factor(self) -> float:
-        return float(self.q() / norm.isf(self._get_alpha_goal() / 2))
+        return float(self.q() / _isf(self._get_alpha_goal() / 2))
 
 
 class AdaptiveConformal(_BaseConformal):
@@ -209,7 +221,7 @@ def _compute_interval(m: float, s: float, cal, coverage_target: float) -> tuple[
         lo, hi = (float(v) for v in cal.interval(m, s))
     else:
         factor = 1.0
-        z = float(norm.isf((1 - coverage_target) / 2))
+        z = float(_isf((1 - coverage_target) / 2))
         lo, hi = float(m - z * s), float(m + z * s)
     return factor, lo, hi
 

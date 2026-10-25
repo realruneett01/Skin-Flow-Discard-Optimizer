@@ -5,7 +5,6 @@ import pytest
 
 from skinflow_discard_optimizer.eval.backtest import (
     MetricInterval,
-    ScenarioMetrics,
     compute_recovery_pct,
     generate_report_markdown,
     run_clustered_bootstrap,

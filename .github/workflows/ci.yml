@@ -1,6 +1,6 @@
 name: ci
 on:
-  push: { branches: [main], tags: ["v*"] }
+  push: { branches: [master, main], tags: ["v*"] }
   pull_request:
 permissions: { contents: read }
 
@@ -13,8 +13,18 @@ jobs:
         with: { python-version: "3.12", cache: pip }
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu   # CPU wheel; the dev extra then sees torch as satisfied
       - run: pip install -e ".[dev]"
-      # test_service and test_fault_id need the built artifacts and full-size feature data, which CI does not build.
-      - run: pytest -m "not slow" --ignore=tests/test_service.py --ignore=tests/test_fault_id.py
+      - uses: actions/cache@v4            # models and data built by the next step; keyed on everything they depend on
+        with:
+          path: |
+            artifacts
+            data
+          key: models-edge-${{ hashFiles('config/**', 'skinflow_discard_optimizer/sim/scenarios/**', 'skinflow_discard_optimizer/core/**', 'skinflow_discard_optimizer/sim/**') }}
+      - run: skdo bootstrap
+        env: { SKDO_TIER: edge }
+      - run: pytest -m "not slow"
+        env: { SKDO_TIER: edge }
+      - run: pytest -m slow
+        env: { SKDO_TIER: edge }
 
   image:
     needs: test

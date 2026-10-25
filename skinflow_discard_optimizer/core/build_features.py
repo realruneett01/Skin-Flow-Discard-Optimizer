@@ -13,7 +13,6 @@ import argparse
 import time
 from concurrent.futures import ProcessPoolExecutor
 
-import numpy as np
 import pandas as pd
 
 from skinflow_discard_optimizer.core.features import FeatureExtractor, inputs_from_row

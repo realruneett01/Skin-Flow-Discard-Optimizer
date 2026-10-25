@@ -32,7 +32,6 @@ from skinflow_discard_optimizer.core.features import CycleInputs, FeatureExtract
 from skinflow_discard_optimizer.core.functional import FPCA
 from skinflow_discard_optimizer.core.safety import (
     CutCandidate,
-    GuardedDecision,
     SafetyConfig,
     SafetyGate,
     StrokeTelemetry,
@@ -105,9 +104,15 @@ class ServiceHealth:
         return asdict(self)
 
 
+def _mean_liner_temp(temps) -> float:
+    """Mean of the finite liner readings; NaN when there are none (the safety gate then rejects the cycle)."""
+    finite = [float(t) for t in temps if np.isfinite(t)]
+    return sum(finite) / len(finite) if finite else float("nan")
+
+
 def _convert_cycle_to_stroke_inputs(inp: CycleInputs) -> StrokeInputs:
     """Converts assembled CycleInputs to StrokeInputs required by CutEngine."""
-    mean_liner = float(np.nanmean(inp.liner_temps_C)) if inp.liner_temps_C else 430.0
+    mean_liner = _mean_liner_temp(inp.liner_temps_C) if inp.liner_temps_C else 430.0
     return StrokeInputs(
         t_s=inp.t_s,
         x_mm=inp.x_mm,
@@ -182,30 +187,63 @@ class StreamingOptimizerService:
             self.engine = CutEngine(block=self.cfg.block)
             self._models_loaded = False
 
+    def _stroke_completeness_issues(self, inp: CycleInputs) -> list[str]:
+        """The decision region is the last ``max_cut_mm`` of the upset billet; a stroke that stops short has none."""
+        press = getattr(self.engine, "press", None)
+        if press is None:
+            return []
+        length = inp.billet_length_mm
+        if not (np.isfinite(length) and 0.0 < length < 5000.0):
+            return [f"BAD_BILLET_LENGTH: {length!r} mm"]
+        x = np.asarray(inp.x_mm, float)
+        finite = x[np.isfinite(x)]
+        if finite.size == 0:
+            return []                           # reported by the telemetry checks
+        reach = float(press.upset_length(length)) - self.safety_gate.cfg.max_cut_mm
+        if float(finite.max()) < reach:
+            return [f"INCOMPLETE_STROKE: ram reached {finite.max():.0f} mm but the decision region starts at {reach:.0f} mm"]
+        return []
+
     def process_cycle_inputs(self, inp: CycleInputs) -> CycleLogEntry:
         """Processes one complete billet cycle through Phases 2-5."""
         telemetry = StrokeTelemetry(t_s=inp.t_s, x_mm=inp.x_mm, p_cap_bar=inp.p_cap_bar, p_rod_bar=inp.p_rod_bar)
         telemetry_issues = self.safety_gate.validate_stroke_telemetry(telemetry)
         context_issues = self.safety_gate.validate_process_context(
-            inp.alloy_id, inp.billet_temp_C, float(np.nanmean(inp.liner_temps_C))
+            inp.alloy_id, inp.billet_temp_C, _mean_liner_temp(inp.liner_temps_C)
         )
         all_issues = telemetry_issues + context_issues
+        all_issues += self._stroke_completeness_issues(inp)
+        if getattr(self.engine, "prior_model", None) is None:
+            all_issues.append("MODELS_NOT_LOADED: no fitted decision models; publishing the static cut (run `skdo bootstrap`)")
 
-        stroke_inputs = _convert_cycle_to_stroke_inputs(inp)
-        decision = self.engine.decide(stroke_inputs)
+        t_start = time.perf_counter()
+        decision: CycleDecision | None = None
+        drift_alarm, fault_class = False, "none"
+        if all_issues:
+            # Corrupt telemetry or an unsupported process: the engine and the drift statistics would only see
+            # garbage (and some corruptions, such as a short stroke, make the engine raise). Go straight to the
+            # safety fallback and keep the corrupt cycle out of the drift monitor.
+            logger.warning("Cycle %d rejected by the safety gate: %s", inp.cycle_id, "; ".join(all_issues))
+        else:
+            try:
+                decision = self.engine.decide(_convert_cycle_to_stroke_inputs(inp))
+                feats = self.feature_extractor.extract(inp)
+                drift_alarm = bool(self.monitor.update(inp.cycle_id, feats).is_alarm)
+                diag = self.fault_classifier.classify(inp.cycle_id, feats)
+                fault_class = diag.dominant_fault if diag is not None else "none"
+            except Exception as err:  # noqa: BLE001 - one bad cycle must not stop the live service
+                logger.exception("Cycle %d: decision engine failed; publishing the safety fallback", inp.cycle_id)
+                all_issues = [*all_issues, f"ENGINE_ERROR: {type(err).__name__}: {err}"]
+                decision, drift_alarm, fault_class = None, False, "none"
 
-        # Feature extraction, monitor, and fault classification
-        feats = self.feature_extractor.extract(inp)
-        mon_result = self.monitor.update(inp.cycle_id, feats)
-        drift_alarm = bool(mon_result.is_alarm)
-
-        diag = self.fault_classifier.classify(inp.cycle_id, feats)
-        fault_class = diag.dominant_fault if diag is not None else "none"
-
-        candidate = _build_candidate(decision, all_issues, fault_class)
+        if decision is None:
+            candidate = CutCandidate(raw_cut_mm=None, confidence="none", fault_class="none",
+                                     is_novel_fault=False, telemetry_issues=tuple(all_issues))
+        else:
+            candidate = _build_candidate(decision, all_issues, fault_class)
         guarded = self.safety_gate.guard_cut_decision(candidate)
 
-        latency_ms = float(decision.compute_ms)
+        latency_ms = float(decision.compute_ms) if decision is not None else (time.perf_counter() - t_start) * 1000.0
         within_budget = latency_ms <= self.cfg.latency_budget_ms
 
         if not within_budget:
@@ -217,12 +255,15 @@ class StreamingOptimizerService:
             )
 
         published_tags = dict(guarded.published_tags)
-        published_tags["Predictor.CutIntervalLowMm"] = (
-            guarded.h_cut_mm - 1.5 if not guarded.is_fallback else guarded.h_cut_mm
-        )
-        published_tags["Predictor.CutIntervalHighMm"] = (
-            guarded.h_cut_mm + 1.5 if not guarded.is_fallback else guarded.h_cut_mm
-        )
+        # The calibrated (conformal) interval on the critical thickness h_crit, kept inside the safety bounds.
+        # In fallback the static cut is shown with no interval.
+        cfg = self.safety_gate.cfg
+        rec = decision.recommendation if decision is not None else None
+        low = guarded.h_cut_mm if (guarded.is_fallback or rec is None) else float(np.clip(rec.interval_lo_mm, cfg.min_cut_mm, cfg.max_cut_mm))
+        high = guarded.h_cut_mm if (guarded.is_fallback or rec is None) else float(np.clip(rec.interval_hi_mm, cfg.min_cut_mm, cfg.max_cut_mm))
+        published_tags["Predictor.CutIntervalLowMm"] = low
+        published_tags["Predictor.CutIntervalHighMm"] = high
+        published_tags["Predictor.CutConfidence"] = "fallback" if guarded.is_fallback else guarded.confidence
         published_tags["Predictor.DriftAlarm"] = drift_alarm
         published_tags["Predictor.FaultClass"] = fault_class
 

@@ -6,24 +6,29 @@
   The nodes are read-only for clients, so the advisory-only guarantee does not depend on the press
   server's permissions. The press server is never written to.
 
-Limits worth knowing: security is ``None`` by default (set ``SKDO_OPCUA_USER``/``SKDO_OPCUA_PASSWORD`` for
-username auth on the client side), and sustained 1 kHz delivery depends on what the press server grants for
+Security (``service/opcua_security.py``): certificates and username login on both ends via ``SKDO_*`` variables;
+the Predictor server refuses to bind a routable address unencrypted. Sustained 1 kHz delivery depends on what the press server grants for
 sampling interval and queue size; ``commission`` measures what actually arrives.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import timezone
 
 import numpy as np
-from asyncua import Client, Server, ua
+from asyncua import Client, ua
 
 from skinflow_discard_optimizer.contracts.schema import SignalContract
 from skinflow_discard_optimizer.core.assembler import CycleAssembler
+from skinflow_discard_optimizer.service.opcua_security import (
+    ServerSecurity,
+    apply_client_security,
+    apply_server_security,
+    make_server,
+)
 
 logger = logging.getLogger("skinflow.opcua")
 
@@ -57,6 +62,37 @@ def _canonical_phase(contract: SignalContract, name: str) -> str:
     return name
 
 
+def make_sink(contract: SignalContract, asm: CycleAssembler, on_cycle, bad_values: dict | None = None):
+    """Callback that feeds one received sample to the assembler.
+
+    A press server can deliver anything (wrong types, bad-quality nulls, out-of-range numbers). Unusable values
+    are counted and dropped; they never raise into the OPC-UA client library.
+    """
+    bad = bad_values if bad_values is not None else {}
+
+    def sink(sig: str, t: float, val) -> None:
+        try:
+            if sig == "cycle_phase":
+                val = _canonical_phase(contract, str(val))
+            elif sig in TEXT:
+                val = str(val)
+            elif sig == "cycle_id":
+                val = int(val)
+            else:
+                if isinstance(val, (bool, bytes, str)) or not np.isscalar(val):
+                    raise TypeError(f"non-numeric value {type(val).__name__}")
+                val = float(val)
+            t = float(t)
+        except (TypeError, ValueError, OverflowError):
+            bad[sig] = bad.get(sig, 0) + 1
+            return
+        asm.push(sig, t, val)
+        for cyc in asm.pop_completed():
+            on_cycle(cyc)
+
+    return sink
+
+
 class _Handler:
     """asyncua data-change callback: turn notifications into ``(signal, t, value)`` pushes."""
 
@@ -88,12 +124,7 @@ async def _subscribe(client: Client, contract: SignalContract, sink) -> None:
 
 
 def make_client(endpoint: str) -> Client:
-    client = Client(endpoint, timeout=10)
-    user, pw = os.environ.get("SKDO_OPCUA_USER"), os.environ.get("SKDO_OPCUA_PASSWORD")
-    if user:
-        client.set_user(user)
-        client.set_password(pw or "")
-    return client
+    return Client(endpoint, timeout=10)
 
 
 async def connect_with_retry(endpoint: str, wait_s: float = 60.0) -> Client:
@@ -102,9 +133,10 @@ async def connect_with_retry(endpoint: str, wait_s: float = 60.0) -> Client:
     while True:
         client = make_client(endpoint)
         try:
+            await apply_client_security(client)
             await client.connect()
             return client
-        except (OSError, asyncio.TimeoutError, ua.UaError) as err:
+        except (OSError, asyncio.TimeoutError, ua.UaError) as err:    # config errors (ValueError) are not retried
             if time.monotonic() >= deadline:
                 raise ConnectionError(f"cannot reach OPC-UA server {endpoint} after {wait_s:.0f}s: {err}") from err
             logger.warning("OPC-UA server %s not reachable yet (%s); retrying", endpoint, err)
@@ -114,15 +146,18 @@ async def connect_with_retry(endpoint: str, wait_s: float = 60.0) -> Client:
 class PredictorServer:
     """Hosts the ``Predictor.*`` nodes. Clients can read and subscribe; they cannot write."""
 
-    def __init__(self, contract: SignalContract, endpoint: str):
+    def __init__(self, contract: SignalContract, endpoint: str, security: ServerSecurity | None = None):
         self.contract, self.endpoint = contract, endpoint
-        self.server = Server()
+        self.security = security if security is not None else ServerSecurity.from_env()
+        self.server = make_server(self.security)
         self.nodes: dict[str, object] = {}
 
     async def start(self) -> None:
+        self.security.check_bind(self.endpoint)
         s = self.server
         await s.init()
         s.set_endpoint(self.endpoint)
+        await apply_server_security(s, self.security)
         s.set_server_name("Skin-Flow Discard Optimizer (advisory)")
         idx = 0
         while idx < self.contract.namespace_index:       # the contract's tags use a fixed namespace index
@@ -154,45 +189,64 @@ class LiveRunner:
     service: object                       # StreamingOptimizerService
     contract: SignalContract
     endpoint: str
-    serve: str = "opc.tcp://0.0.0.0:4841/skdo"
+    serve: str = "opc.tcp://127.0.0.1:4841/skdo"
     results: list = field(default_factory=list)
+    bad_values: dict = field(default_factory=dict)      # signal -> count of unusable values received
+    stale_s: float = 30.0                               # no data for this long -> check the link, reconnect if dead
 
     async def run(self, max_cycles: int | None = None, stop: asyncio.Event | None = None) -> list:
+        """Run until ``max_cycles`` cycles are done or ``stop`` is set. Reconnects if the press link drops."""
         loop = asyncio.get_running_loop()
         asm: CycleAssembler = self.service.assembler
         done: asyncio.Queue = asyncio.Queue()
+        sink = make_sink(self.contract, asm, done.put_nowait, self.bad_values)
+        last_rx = [time.monotonic()]
 
-        def sink(sig: str, t: float, val) -> None:
-            if sig == "cycle_phase":
-                val = _canonical_phase(self.contract, str(val))
-            elif sig in TEXT:
-                val = str(val)
-            elif sig == "cycle_id":
-                val = int(val)
-            asm.push(sig, t, val)
-            for cyc in asm.pop_completed():
-                done.put_nowait(cyc)
+        def counting_sink(sig: str, t: float, val) -> None:
+            last_rx[0] = time.monotonic()
+            sink(sig, t, val)
+
+        def finished() -> bool:
+            return (max_cycles is not None and len(self.results) >= max_cycles) or bool(stop and stop.is_set())
 
         pub = PredictorServer(self.contract, self.serve)
         await pub.start()
         try:
-            client = await connect_with_retry(self.endpoint)
-            try:
-                await _subscribe(client, self.contract, sink)
-                logger.info("Subscribed to %d press tags on %s", len(REQUIRED_SIGNALS), self.endpoint)
-                while (max_cycles is None or len(self.results) < max_cycles) and not (stop and stop.is_set()):
+            while not finished():
+                client = await connect_with_retry(self.endpoint)
+                try:
+                    await _subscribe(client, self.contract, counting_sink)
+                    last_rx[0] = time.monotonic()
+                    logger.info("Subscribed to %d press tags on %s", len(REQUIRED_SIGNALS), self.endpoint)
+                    while not finished():
+                        try:
+                            cyc = await asyncio.wait_for(done.get(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            if time.monotonic() - last_rx[0] > self.stale_s and not await _link_alive(client):
+                                logger.warning("Press link lost; reconnecting")
+                                asm.phase, asm.phase_start = "idle", None      # drop the half-assembled cycle
+                                asm._reset()
+                                break
+                            continue
+                        entry = await loop.run_in_executor(None, self.service.process_cycle_inputs, cyc)
+                        await pub.publish(entry.published_tags)
+                        self.results.append(entry)
+                finally:
                     try:
-                        cyc = await asyncio.wait_for(done.get(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        continue
-                    entry = await loop.run_in_executor(None, self.service.process_cycle_inputs, cyc)
-                    await pub.publish(entry.published_tags)
-                    self.results.append(entry)
-            finally:
-                await client.disconnect()
+                        await client.disconnect()
+                    except Exception:  # noqa: BLE001 - the link may already be gone
+                        pass
         finally:
             await pub.stop()
         return self.results
+
+
+async def _link_alive(client: Client) -> bool:
+    try:
+        await asyncio.wait_for(client.check_connection(), timeout=5.0)
+        return True
+    except Exception:  # noqa: BLE001 - any failure means the session is unusable
+        return False
 
 
 async def commission(contract: SignalContract, endpoint: str, seconds: float) -> dict:

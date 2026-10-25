@@ -263,13 +263,13 @@ outputs:
       unit: mm
       type: float
       range: [0.0, 300.0]
-      description: "Lower end of the calibrated interval on the recommended cut"
+      description: "Lower end of the calibrated (conformal) interval on the critical thickness h_crit, clipped to the safety bounds"
     Predictor.CutIntervalHighMm:
       tag: "ns=2;s=Predictor.CutIntervalHighMm"
       unit: mm
       type: float
       range: [0.0, 300.0]
-      description: "Upper end of the calibrated interval on the recommended cut"
+      description: "Upper end of the calibrated (conformal) interval on the critical thickness h_crit, clipped to the safety bounds"
     Predictor.CutConfidence:
       tag: "ns=2;s=Predictor.CutConfidence"
       unit: "-"

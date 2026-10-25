@@ -40,7 +40,6 @@ from skinflow_discard_optimizer.roi.engine import (  # noqa: E402
 from skinflow_discard_optimizer.service.run import (  # noqa: E402
     ServiceConfig,
     StreamingOptimizerService,
-    CycleLogEntry,
 )
 
 logger = logging.getLogger("skinflow.dashboard")
